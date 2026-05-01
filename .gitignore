@@ -1,0 +1,46 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# Distribution
+src/my_agent.egg-info/
+dist/
+build/
+*.whl
+
+# Environments
+.env
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Ruff cache
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Archives & debug files
+archive/
+debug_*.py
+test_httpx*.py
+test_ps_agent.py
+test_powershell.py
+2.py
+usage.txt
+syllogism.db
+~/.my-agent
+
+# Non-source documents (keep README, technical docs)
+AGENT_FRAMEWORKS_VERIFIED.md
+AGENT_TECH_PAPERS_2026_04*.md
+AGENT_TECH_SURVEY_2026_05.md
+LEARNING_LANGGRAPH.md

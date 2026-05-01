@@ -1,0 +1,158 @@
+{
+  "persona_facts": [],
+  "documents": [
+    {
+      "id": "doc1",
+      "content": "John is a software engineer at Google.",
+      "metadata": {
+        "domain": "biography"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc2",
+      "content": "John prefers Python over Java for backend development.",
+      "metadata": {
+        "domain": "preferences"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc3",
+      "content": "John lives in San Francisco with his wife Sarah.",
+      "metadata": {
+        "domain": "biography"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc1",
+      "content": "John is a software engineer at Google.",
+      "metadata": {
+        "domain": "work"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc2",
+      "content": "Python is a dynamically typed language.",
+      "metadata": {
+        "domain": "tech"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc1",
+      "content": "John is a software engineer at Google.",
+      "metadata": {
+        "domain": "work"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc2",
+      "content": "Python is a dynamically typed language.",
+      "metadata": {
+        "domain": "tech"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc1",
+      "content": "John is a software engineer at Google.",
+      "metadata": {
+        "domain": "biography"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc2",
+      "content": "John prefers Python over Java for backend development.",
+      "metadata": {
+        "domain": "preferences"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc3",
+      "content": "John lives in San Francisco with his wife Sarah.",
+      "metadata": {
+        "domain": "biography"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc1",
+      "content": "John is a software engineer at Google.",
+      "metadata": {
+        "domain": "biography"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc2",
+      "content": "John prefers Python over Java for backend development.",
+      "metadata": {
+        "domain": "preferences"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc3",
+      "content": "John lives in San Francisco with his wife Sarah.",
+      "metadata": {
+        "domain": "biography"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc1",
+      "content": "John is a software engineer at Google.",
+      "metadata": {
+        "domain": "biography"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc2",
+      "content": "John prefers Python over Java for backend development.",
+      "metadata": {
+        "domain": "preferences"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc3",
+      "content": "John lives in San Francisco with his wife Sarah.",
+      "metadata": {
+        "domain": "biography"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc1",
+      "content": "John is a software engineer at Google.",
+      "metadata": {
+        "domain": "biography"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc2",
+      "content": "John prefers Python over Java for backend development.",
+      "metadata": {
+        "domain": "preferences"
+      },
+      "embedding": null
+    },
+    {
+      "id": "doc3",
+      "content": "John lives in San Francisco with his wife Sarah.",
+      "metadata": {
+        "domain": "biography"
+      },
+      "embedding": null
+    }
+  ],
+  "citations": []
+}

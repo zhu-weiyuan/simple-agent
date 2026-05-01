@@ -1,0 +1,15 @@
+{
+  "user_preferences": {
+    "language": "zh"
+  },
+  "project_state": {
+    "agent_name": "SimpleAgent",
+    "current_focus": "learn-claude-code-and-build-simpleagent"
+  },
+  "stable_facts": {
+    "environment": "windows-native-python",
+    "note_2": "以后默认中文",
+    "note_3": "以后讲解优先从记忆系统角度切入",
+    "note_4": "我喜欢 Python"
+  }
+}

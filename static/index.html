@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SimpleAgent - AI 助手</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <span class="logo-icon">🤖</span>
+                    <span class="logo-text">SimpleAgent</span>
+                </div>
+                <button class="new-chat-btn" onclick="newChat()">
+                    <span>+</span> 新对话
+                </button>
+            </div>
+            
+            <div class="chat-history">
+                <div class="history-header">历史对话</div>
+                <div class="chat-list" id="chatList"></div>
+            </div>
+            
+            <div class="sidebar-footer">
+                <div class="model-selector">
+                    <label>模型:</label>
+                    <select id="modelSelect">
+                        <option value="Qwen/Qwen2.5-72B-Instruct">Qwen2.5-72B</option>
+                        <option value="gpt-4o-mini">GPT-4o-mini</option>
+                        <option value="claude-3-sonnet">Claude 3 Sonnet</option>
+                    </select>
+                </div>
+                <div class="settings-btn">⚙️ 设置</div>
+            </div>
+        </aside>
+        
+        <!-- 主聊天区域 -->
+        <main class="chat-main">
+            <header class="chat-header">
+                <div class="header-left">
+                    <button class="menu-btn" onclick="toggleSidebar()">☰</button>
+                    <h1>SimpleAgent AI 助手</h1>
+                </div>
+                <div class="header-right">
+                    <div class="status-indicator" id="statusIndicator">
+                        <span class="status-dot online"></span>
+                        <span>在线</span>
+                    </div>
+                    <button class="theme-toggle" onclick="toggleTheme()">🌙</button>
+                </div>
+            </header>
+            
+            <div class="chat-messages" id="chatMessages">
+                <!-- 欢迎消息 -->
+                <div class="message welcome-message">
+                    <div class="message-avatar">🤖</div>
+                    <div class="message-content">
+                        <h3>你好！我是 SimpleAgent AI 助手 👋</h3>
+                        <p>我可以帮你：</p>
+                        <ul>
+                            <li>💬 回答问题和建议</li>
+                            <li>🔍 查询复杂度分析</li>
+                            <li>🧠 Persona 记忆提取</li>
+                            <li>🚨 幻觉检测</li>
+                            <li>📚 确定性引用</li>
+                            <li>🔎 多索引检索</li>
+                        </ul>
+                        <p>请开始对话吧！</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="chat-input-area">
+                <div class="input-container">
+                    <textarea 
+                        id="messageInput" 
+                        placeholder="输入你的消息..." 
+                        rows="1"
+                        onkeydown="handleKeyDown(event)"
+                        oninput="autoResize(this)"
+                    ></textarea>
+                    <button class="send-btn" id="sendBtn" onclick="sendMessage()">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="input-footer">
+                    <span>按 Enter 发送，Shift + Enter 换行</span>
+                    <div class="input-tools">
+                        <button class="tool-btn" onclick="showEnhancedTools()" title="增强工具">🔧</button>
+                        <button class="tool-btn" onclick="clearChat()" title="清空对话">🗑️</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+        
+        <!-- 增强工具面板 -->
+        <div class="enhanced-tools-panel" id="enhancedToolsPanel">
+            <div class="panel-header">
+                <h3>🔧 增强工具</h3>
+                <button class="close-panel" onclick="hideEnhancedTools()">✕</button>
+            </div>
+            <div class="panel-content">
+                <div class="tool-section">
+                    <h4>🔍 查询复杂度分类</h4>
+                    <input type="text" id="queryClassifierInput" placeholder="输入查询文本...">
+                    <button onclick="classifyQuery()">分析</button>
+                    <div id="queryResult" class="tool-result"></div>
+                </div>
+                
+                <div class="tool-section">
+                    <h4>🧠 Persona 记忆提取</h4>
+                    <textarea id="personaInput" placeholder="输入包含 Persona 信息的文本..." rows="3"></textarea>
+                    <button onclick="extractPersona()">提取</button>
+                    <div id="personaResult" class="tool-result"></div>
+                </div>
+                
+                <div class="tool-section">
+                    <h4>🚨 幻觉检测</h4>
+                    <textarea id="hallucinationInput" placeholder="输入文本进行幻觉检测..." rows="3"></textarea>
+                    <button onclick="detectHallucination()">检测</button>
+                    <div id="hallucinationResult" class="tool-result"></div>
+                </div>
+                
+                <div class="tool-section">
+                    <h4>📚 确定性引用</h4>
+                    <textarea id="citationInput" placeholder="输入文本进行引用提取..." rows="3"></textarea>
+                    <button onclick="extractCitation()">提取</button>
+                    <div id="citationResult" class="tool-result"></div>
+                </div>
+                
+                <div class="tool-section">
+                    <h4>🔎 多索引检索</h4>
+                    <input type="text" id="multiIndexInput" placeholder="输入搜索查询...">
+                    <button onclick="searchMultiIndex()">搜索</button>
+                    <div id="multiIndexResult" class="tool-result"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/static/app.js"></script>
+</body>
+</html>
