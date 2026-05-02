@@ -1,4 +1,5 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """MCP (Model Context Protocol) 客户端，使用 stdio + JSON-RPC 2.0。"""
 
 from __future__ import annotations

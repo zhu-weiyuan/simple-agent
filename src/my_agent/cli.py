@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """
 my_agent.cli — 向后兼容的 CLI 入口
 

@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """
 my_agent.message — 向后兼容 shim
 

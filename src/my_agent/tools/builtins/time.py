@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """
 my_agent.tools.builtins.time — 时间工具
 """

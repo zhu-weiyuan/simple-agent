@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """
 流式输出系统
 基于论文：AutoGen 2.0: Next-Generation Multi-Agent Framework with Native Tool Use and Streaming

@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """LangGraph 风格图编排引擎 - 精简测试"""
 import sys
 import io

@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """
 SimpleAgent Web 应用
 提供 REST API 和 Web 界面来测试所有增强模块

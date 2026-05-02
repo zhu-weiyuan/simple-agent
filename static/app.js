@@ -141,24 +141,95 @@ async function sendMessage() {
     document.getElementById('sendBtn').disabled = true;
     
     try {
-        // 构建对话历史发送给后端
-        const conversationHistory = chatHistory[currentChatId].map(m => ({
-            role: m.role === 'ai' ? 'assistant' : 'user',
-            content: m.content
-        }));
-        
-        // 使用流式输出
         const response = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 message: message,
                 chatId: currentChatId,
-                stream: true,
-                conversation: conversationHistory
+                stream: true
             })
         });
-        
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        removeTypingIndicator();
+
+        // 读取 SSE 流
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        let fullReply = '';
+        let enhancedData = null;
+        let aiMsgEl = null;
+        let contentDiv = null;
+
+        // 创建 AI 消息气泡（打字机效果）
+        const messages = document.getElementById('chatMessages');
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message ai';
+        const avatar = document.createElement('div');
+        avatar.className = 'message-avatar';
+        avatar.textContent = '🤖';
+        contentDiv = document.createElement('div');
+        contentDiv.className = 'message-content';
+        contentDiv.innerHTML = '<span class="cursor">▊</span>';
+        messageDiv.appendChild(avatar);
+        messageDiv.appendChild(contentDiv);
+        messages.appendChild(messageDiv);
+        scrollToBottom();
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+
+            // 解析 SSE 事件
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+                if (line.startsWith('event: start')) continue;
+                if (line.startsWith('event: done')) continue;
+                if (line.startsWith('event: error')) continue;
+                if (!line.startsWith('data: ')) continue;
+
+                const dataStr = line.slice(6);
+                try {
+                    const data = JSON.parse(dataStr);
+
+                    if (data.content !== undefined) {
+                        fullReply += data.content;
+                        contentDiv.innerHTML = formatMarkdown(fullReply) + '<span class="cursor">▊</span>';
+                        scrollToBottom();
+                    }
+
+                    if (data.enhanced) {
+                        enhancedData = data.enhanced;
+                    }
+
+                    if (data.reply !== undefined) {
+                        fullReply = data.reply;
+                        contentDiv.innerHTML = formatMarkdown(fullReply);
+                    }
+                } catch (e) {
+                    // ignore parse errors on partial chunks
+                }
+            }
+        }
+
+        // 渲染增强卡片
+        if (enhancedData && Object.keys(enhancedData).length > 0) {
+            appendEnhancedCard(enhancedData);
+        }
+
+        // 保存到历史
+        chatHistory[currentChatId].push({ role: 'ai', content: fullReply });
+        saveChat();
+
     } catch (error) {
         removeTypingIndicator();
         appendMessage('ai', '❌ 错误: ' + error.message);

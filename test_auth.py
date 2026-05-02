@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """测试 Auth header 是否影响响应"""
 import requests
 

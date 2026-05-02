@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """
 my_agent.graph.node — Node & Edge
 

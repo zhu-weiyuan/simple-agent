@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """SimpleAgent 端到端测试"""
 import sys
 import io

@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """
 实时幻觉检测系统 - 混合检测（常识锚点 + LLM + 网络搜索）
 基于概念：SelfCheckGPT + HALU + FaCt

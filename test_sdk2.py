@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """检查 OpenAI SDK 实际发送什么"""
 import os
 from openai import OpenAI

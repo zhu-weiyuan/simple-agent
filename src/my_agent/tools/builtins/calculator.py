@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """
 my_agent.tools.builtins.calculator — 计算器工具
 """

@@ -1,0 +1,16 @@
+{
+  "messages": [
+    {
+      "role": "assistant",
+      "content": "Hi!"
+    }
+  ],
+  "tool_results": {},
+  "current_node": "greeting",
+  "execution_path": [
+    "greeting"
+  ],
+  "run_id": "ea68a13a699c",
+  "iteration_count": 1,
+  "metadata": {}
+}

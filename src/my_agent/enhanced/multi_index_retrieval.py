@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """
 多索引混合检索系统
 基于论文：VectorRAG 3.0: Multi-Index Hybrid Retrieval with Cross-Domain Fusion

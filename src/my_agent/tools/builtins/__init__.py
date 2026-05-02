@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """my_agent.tools.builtins — 内置工具"""
 from .shell import PowerShellTool
 from .file import ReadFileTool, ListFilesTool

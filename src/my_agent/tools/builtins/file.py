@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """
 my_agent.tools.builtins.file — 文件系统工具
 """

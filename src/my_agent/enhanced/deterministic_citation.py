@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """
 确定性引用机制
 基于论文：AgriIR: A Scalable Framework for Domain-Specific Knowledge Retrieval

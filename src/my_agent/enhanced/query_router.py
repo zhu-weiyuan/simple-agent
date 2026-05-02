@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """
 查询复杂度分类器 + 动态路由
 基于论文：Adaptive Query Routing: A Tier-Based Framework for Hybrid Retrieval

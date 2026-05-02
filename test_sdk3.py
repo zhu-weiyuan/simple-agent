@@ -1,3 +1,4 @@
+﻿# -*- coding: utf-8 -*-
 """对比 SDK 和 requests 的请求差异"""
 import os
 import json
