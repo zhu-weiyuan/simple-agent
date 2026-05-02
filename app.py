@@ -17,8 +17,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 from pydantic import BaseModel
+import json
 
 web_dir = Path(__file__).parent / "web"
 web_dir.mkdir(exist_ok=True)
@@ -31,6 +32,7 @@ agent = SimpleAgent()
 
 class ChatRequest(BaseModel):
     message: str
+    stream: bool = False
 
 
 @app.post("/api/chat")
@@ -38,6 +40,12 @@ async def chat(req: ChatRequest):
     if not req.message.strip():
         raise HTTPException(400, "Empty message")
     try:
+        if req.stream:
+            return StreamingResponse(
+                agent.run_stream(req.message),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
         reply = agent.run(req.message)
         return {"reply": reply}
     except Exception as e:
@@ -47,6 +55,28 @@ async def chat(req: ChatRequest):
 @app.get("/api/health")
 async def health():
     return {"ok": True, "agent": agent.name, "version": agent.version}
+
+
+@app.get("/api/tools")
+async def list_tools():
+    """List all registered tools with descriptions."""
+    tools = []
+    for name, tool in agent.tool_registry.tools.items():
+        tools.append({
+            "name": name,
+            "description": getattr(tool, "description", "") or getattr(tool, "__doc__", ""),
+        })
+    return {"tools": tools}
+
+
+@app.get("/api/memory/stats")
+async def memory_stats():
+    """Get memory store statistics."""
+    try:
+        stats = agent.memory_store.get_stats() if hasattr(agent.memory_store, 'get_stats') else {}
+        return {"memory": stats}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # Static files mounted AFTER API routes

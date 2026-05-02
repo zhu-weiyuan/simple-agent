@@ -84,6 +84,16 @@ simple-agent/
 └── README.md
 ```
 
+## 🌐 API 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/chat` | POST | `{"message": "...", "stream": false}` → 对话回复 |
+| `/api/chat` (stream) | POST | `{"message": "...", "stream": true}` → SSE 流式输出 |
+| `/api/health` | GET | 健康检查 |
+| `/api/tools` | GET | 列出所有已注册工具 |
+| `/api/memory/stats` | GET | 记忆存储统计信息 |
+
 ## 🧪 测试
 
 ```bash
