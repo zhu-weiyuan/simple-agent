@@ -160,6 +160,12 @@
       "content": "Agent 是如何思考和工作",
       "confidence": 0.9,
       "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "**最小主链**",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
     }
   ]
 }
