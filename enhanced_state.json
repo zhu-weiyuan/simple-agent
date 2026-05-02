@@ -154,5 +154,12 @@
       "embedding": null
     }
   ],
-  "citations": []
+  "citations": [
+    {
+      "source": "direct_quote",
+      "content": "Agent 是如何思考和工作",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    }
+  ]
 }

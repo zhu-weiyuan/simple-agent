@@ -130,12 +130,12 @@ class QueryEngine:
                 last_response = assistant_msg.content or ""
                 break
 
-            self.session.append(assistant_msg)
-
+            # content_filter: don't append, return immediately
             if finish_reason == "content_filter":
                 return "[内容被安全过滤]"
 
             if assistant_msg.tool_calls:
+                self.session.append(assistant_msg)
                 for tc in assistant_msg.tool_calls:
                     result = self._execute_tool(tc)
                     is_error = result.startswith("错误：") or result.startswith("MCP 调用失败")
@@ -143,6 +143,8 @@ class QueryEngine:
                     self.session.append(tool_msg)
                 continue
 
+            # Final response (no tool calls) — append and return
+            self.session.append(assistant_msg)
             last_response = assistant_msg.content or ""
 
             if self.session.should_compact():
@@ -159,8 +161,20 @@ class QueryEngine:
         if self._llm_call_fn is None:
             raise RuntimeError("未设置 LLM 调用函数，请先通过 set_llm() 配置")
         openai_msgs = [m.to_openai() for m in self.session.messages]
+        # Safety: remove consecutive assistant messages at the end
+        cleaned = self._dedup_assistant(openai_msgs)
         schemas = self.tool_registry.all_schemas()
-        return self._llm_call_fn(openai_msgs, schemas)
+        return self._llm_call_fn(cleaned, schemas)
+
+    @staticmethod
+    def _dedup_assistant(msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Ensure no two consecutive assistant messages at the tail."""
+        i = len(msgs) - 1
+        while i > 0 and msgs[i].get("role") == "assistant" and msgs[i-1].get("role") == "assistant":
+            # Remove the earlier duplicate; keep the latest
+            msgs.pop(i - 1)
+            i -= 1
+        return msgs
 
     def _last_stream(self) -> Generator[str, None, None]:
         if self._llm_stream_fn:

@@ -11,6 +11,12 @@ import os
 import sys
 from pathlib import Path
 
+# Windows 终端 UTF-8 支持
+if sys.platform == "win32":
+    import codecs
+    sys.stdout = codecs.getwriter("utf-8")(sys.stdout.buffer, errors="replace")
+    sys.stderr = codecs.getwriter("utf-8")(sys.stderr.buffer, errors="replace")
+
 # ── 环境配置（按需修改）───────────────────────────────
 os.environ.setdefault("OPENAI_API_KEY", "your_key_here")          # llama.cpp 通常不校验 key
 os.environ.setdefault("OPENAI_BASE_URL", "http://localhost:8080")
