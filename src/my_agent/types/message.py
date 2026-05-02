@@ -92,6 +92,16 @@ class Message:
 
         return msg
 
+    def to_dict(self) -> Dict[str, Any]:
+        """通用字典序列化"""
+        return {
+            "role": self.role.value,
+            "content": self.content,
+            "tool_calls": [tc.__dict__ for tc in self.tool_calls] if self.tool_calls else [],
+            "tool_call_id": self.tool_call_id,
+            "metadata": self.metadata,
+        }
+
     # ── 工厂方法 ─────────────────────────────────────────────
 
     @classmethod
@@ -171,3 +181,8 @@ class Message:
             tool_call_id=tool_call_id,
             metadata={"is_error": True} if is_error else {},
         )
+
+
+# ── Type Alias ──────────────────────────────────────────────
+
+Messages = List[Message]

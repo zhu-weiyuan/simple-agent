@@ -2,8 +2,12 @@
 """
 my_agent.agent — SimpleAgent 主入口
 
-完全重构后的 Agent 架构：
+v2.0 架构（融合最新 Agent 框架最佳实践）：
+
+核心层（参考 strands-agents SDK）：
 - QueryEngine: 核心循环（core/engine.py）
+- AgentBase Protocol: 标准 agent 接口（types/agent.py）
+- AgentResult: 结构化结果（types/agent.py）
 - ToolRegistry: 工具注册表（tools/registry.py）
 - BaseTool: 工具基类（tools/base.py）
 - Message: 统一消息模型（types/message.py）
@@ -13,9 +17,21 @@ my_agent.agent — SimpleAgent 主入口
 - Bridge: 桥接层（bridge/base.py）
 - EnhancedPipeline: 增强流水线（enhanced/）
 
+多 Agent 层（参考 A2A Protocol + LangGraph）：
+- A2A: Agent-to-Agent 协议（a2a.py）
+- AgentAsTool: Agent 作为工具（tools/agent_tool.py）
+- SupervisorAgent: 多 agent 编排（multiagent.py）
+- AgentChain: 链式执行（multiagent.py）
+- ParallelAgent: 并行执行（multiagent.py）
+
+结构化输出（参考 strands-agents structured_output）：
+- StructuredOutputTool: 强制 JSON Schema 输出（tools/structured_output.py）
+
 职责：
 - 组装所有组件
-- 提供 run() / run_stream() 公共 API
+- 提供 run() / run_stream() / invoke() 公共 API
+- AgentBase Protocol 兼容
+- A2A 协议支持
 - 向后兼容原有 CLI 接口
 """
 from __future__ import annotations
@@ -23,13 +39,24 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
+import uuid
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, Dict, Generator, Iterator, List, Optional
 
 # ── 内部模块 ────────────────────────────────────────────────
 
 from .types.message import Message, Role
 from .types.session import SessionConfig
+from .types.agent import (
+    AgentBase,
+    AgentCard,
+    AgentInput,
+    AgentResult,
+    AgentState,
+    AgentMetrics,
+    StopReason,
+)
 from .core.engine import QueryEngine
 from .core.hooks import HookPoint, HookRegistry
 from .tools.registry import ToolRegistry
@@ -40,9 +67,12 @@ from .tools.builtins import (
     PowerShellTool,
     ReadFileTool,
 )
+from .tools.agent_tool import AgentAsTool, create_agent_tool
+from .tools.structured_output import StructuredOutputTool
 from .memory.store import MemoryStore
 from .memory.retrieval import MemoryRetriever
 from .bridge.base import LocalBridge
+from .a2a import A2AClient, A2AServer, TaskState as A2ATaskState, A2AMessage
 
 # ── 可选依赖 ────────────────────────────────────────────────
 
@@ -133,7 +163,13 @@ class _FakeToolCall:
 
 class SimpleAgent:
     """
-    增强型 Python Agent。
+    v2.0 增强型 Python Agent（兼容 AgentBase Protocol）。
+
+    融合最新 Agent 框架最佳实践：
+    - strands-agents: AgentBase Protocol, AgentResult, Agent-as-Tool
+    - A2A Protocol: Agent Card, 任务状态, 互操作
+    - LangGraph: 图状态管理
+    - AgentScope Runtime: 生产级特性
 
     架构分层：
     ```
@@ -144,7 +180,10 @@ class SimpleAgent:
     │   └── HookRegistry (钩子系统)
     ├── MemoryStore (记忆存储)
     ├── Bridge (桥接层)
-    └── EnhancedPipeline (增强流水线)
+    ├── EnhancedPipeline (增强流水线)
+    ├── A2A (Agent-to-Agent 协议)
+    ├── MultiAgent (多 agent 编排)
+    └── StructuredOutput (结构化输出)
     ```
     """
 
@@ -166,8 +205,16 @@ class SimpleAgent:
         system_prompt: Optional[str] = None,
         enable_enhanced: bool = True,
         session_config: Optional[SessionConfig] = None,
+        name: str = "SimpleAgent",
+        description: str = "A lightweight Python AI agent",
+        version: str = "2.0.0",
     ) -> None:
         self.project_root = Path(__file__).resolve().parents[2]
+
+        # ── AgentBase Protocol 属性 ──────────────────────────
+        self.name = name
+        self.description = description
+        self.version = version
 
         # ── 记忆系统 ─────────────────────────────────────────
         self.memory_store = MemoryStore(self.project_root)
@@ -544,6 +591,144 @@ class SimpleAgent:
     def run_stream(self, user_input: str) -> Generator[str, None, None]:
         """流式处理用户输入"""
         return self.engine.run_stream(user_input)
+
+    # ── AgentBase Protocol 方法 ──────────────────────────────
+
+    def invoke(
+        self,
+        prompt: AgentInput = None,
+        **kwargs: Any,
+    ) -> "AgentResult":
+        """AgentBase Protocol: 同步调用，返回结构化结果
+
+        Args:
+            prompt: 输入提示（字符串或 Messages）
+            **kwargs: 额外参数
+
+        Returns:
+            AgentResult 包含完整结果、指标和状态
+        """
+        if prompt is None:
+            return AgentResult(
+                stop_reason=StopReason.ERROR,
+                message=Message.assistant("请输入内容"),
+            )
+
+        if isinstance(prompt, list):
+            # Messages list
+            text = " ".join(
+                m.content for m in prompt if hasattr(m, 'content') and m.content
+            )
+        else:
+            text = str(prompt)
+
+        start_time = time.time()
+        try:
+            result_text = self.run(text)
+            duration = (time.time() - start_time) * 1000
+
+            metrics = AgentMetrics(
+                tool_calls=self.engine.session.tool_call_count
+                    if hasattr(self.engine.session, 'tool_call_count') else 0,
+                duration_ms=duration,
+                iterations=len(self.engine.session.messages),
+            )
+
+            return AgentResult(
+                stop_reason=StopReason.COMPLETE,
+                message=Message.assistant(result_text),
+                metrics=metrics,
+            )
+        except Exception as e:
+            duration = (time.time() - start_time) * 1000
+            return AgentResult(
+                stop_reason=StopReason.ERROR,
+                message=Message.assistant(f"错误：{type(e).__name__}: {e}"),
+                metrics=AgentMetrics(duration_ms=duration),
+            )
+
+    def stream(
+        self,
+        prompt: AgentInput = None,
+        **kwargs: Any,
+    ) -> Iterator[str]:
+        """AgentBase Protocol: 流式调用
+
+        Args:
+            prompt: 输入提示
+            **kwargs: 额外参数
+
+        Yields:
+            文本片段
+        """
+        if prompt is None:
+            yield "请输入内容"
+            return
+
+        text = str(prompt) if not isinstance(prompt, list) else " ".join(
+            m.content for m in prompt if hasattr(m, 'content') and m.content
+        )
+
+        yield from self.run_stream(text)
+
+    def card(self) -> "AgentCard":
+        """获取 Agent Card（A2A 协议兼容）"""
+        tool_names = list(self.tool_registry._handlers.keys()) if hasattr(self.tool_registry, '_handlers') else []
+
+        return AgentCard(
+            name=self.name,
+            description=self.description,
+            version=self.version,
+            capabilities={
+                "tools": len(tool_names),
+                "memory": True,
+                "enhanced": self.enable_enhanced,
+                "mcp": self._mcp_client is not None,
+                "streaming": True,
+            },
+            tools=tool_names,
+        )
+
+    def as_tool(
+        self,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        preserve_context: bool = False,
+    ) -> "AgentAsTool":
+        """将当前 agent 包装为工具（Agent-as-Tool）
+
+        Example:
+            researcher = SimpleAgent(name="researcher", description="搜索信息")
+            writer = SimpleAgent(name="writer", description="撰写内容")
+
+            # 将 researcher 作为 writer 的工具
+            writer.add_tool(researcher.as_tool())
+        """
+        return AgentAsTool(
+            agent=self,
+            name=name or self.name,
+            description=description or self.description,
+            preserve_context=preserve_context,
+        )
+
+    def add_tool(self, tool: Any) -> None:
+        """添加工具到注册表
+
+        Args:
+            tool: BaseTool 实例、AgentAsTool、或可调用对象
+        """
+        if isinstance(tool, AgentAsTool):
+            tool.register(self.tool_registry)
+        elif hasattr(tool, 'register'):
+            tool.register(self.tool_registry)
+        elif callable(tool):
+            self.tool_registry.add(
+                name=tool.__name__,
+                handler=lambda p, fn=tool: fn(p),
+                description=getattr(tool, '__doc__', '') or '',
+                parameters={"type": "object", "properties": {}},
+            )
+        self._debug(f"已添加工具: {getattr(tool, 'name', tool)}")
 
     # ── lifecycle ────────────────────────────────────────────
 
