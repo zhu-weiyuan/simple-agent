@@ -322,6 +322,57 @@ async def analytics(limit: int = 50):
         return {"error": str(e), "total_sessions": 0, "total_messages": 0}
 
 
+@app.post("/api/intent")
+async def classify_intent(req: ChatRequest):
+    """Classify the intent of a user message.
+
+    Returns intent type, confidence score, and suggested follow-up actions.
+    Useful for routing user messages to appropriate handlers.
+    """
+    if not req.message.strip():
+        raise HTTPException(400, "Empty message")
+
+    # Lightweight keyword-based intent classification (no LLM call needed)
+    text = req.message.lower()
+    intents = {
+        "greeting": ["你好", "hello", "hi", "hey", "在吗", "早上好", "晚上好"],
+        "question": ["怎么", "什么", "为什么", "如何", "请问", "哪里", "多少", "who", "what", "how", "why"],
+        "command": ["帮我", "请", "执行", "run", "execute", "do this", "please"],
+        "feedback": ["谢谢", "感谢", "好", "不错", "满意", "thanks", "good", "great"],
+        "complaint": ["投诉", "不好", "差", "垃圾", "bug", "问题", "error", "broken"],
+    }
+
+    scores = {}
+    for intent, keywords in intents.items():
+        score = sum(1 for kw in keywords if kw in text)
+        if score > 0:
+            scores[intent] = score
+
+    if scores:
+        top_intent = max(scores, key=scores.get)
+        confidence = min(0.95, 0.5 + scores[top_intent] * 0.15)
+    else:
+        top_intent = "general"
+        confidence = 0.3
+
+    # Generate suggested follow-ups based on intent
+    suggestions = {
+        "greeting": ["有什么可以帮你的？", "想聊点什么？", "需要查询什么信息？"],
+        "question": ["能详细说明一下吗？", "还有其他问题吗？", "需要我查资料吗？"],
+        "command": ["确认执行？", "需要更多参数？", "要查看结果吗？"],
+        "feedback": ["还有什么需要帮助的？", "有其他问题吗？", "感谢反馈！"],
+        "complaint": ["能详细描述问题吗？", "什么时间出现的？", "有错误截图吗？"],
+        "general": ["请详细描述您的需求", "需要什么帮助？"],
+    }
+
+    return {
+        "intent": top_intent,
+        "confidence": round(confidence, 2),
+        "all_scores": {k: round(v / max(scores.values(), 1), 2) for k, v in scores.items()},
+        "suggestions": suggestions.get(top_intent, []),
+    }
+
+
 @app.get("/api/card")
 async def agent_card():
     """Get Agent Card (A2A protocol compatible).

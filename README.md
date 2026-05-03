@@ -100,6 +100,7 @@ simple-agent/
 | `/api/conversations` | GET | 列出最近的对话会话（session管理）|
 | `/api/conversations/{id}` | DELETE | 删除指定会话 |
 | `/api/analytics` | GET | 对话分析统计（会话数、消息量、平均长度）|
+| `/api/intent` | POST | `{"message": "..."}` → 意图分类 + 置信度 + 建议回复 |
 
 ## 🧪 测试
 
