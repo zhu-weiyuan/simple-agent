@@ -14,6 +14,7 @@
   - 📚 **多索引混合检索** — Vector + Keyword + Graph 三模检索
   - 💬 **流式输出** — 实时增量响应
 - **图状态编排引擎**（Graph）：节点有向图，支持状态传递、条件分支、循环
+- **Web UI 增强**：意图分析面板（实时显示用户意图分类+置信度）、快捷操作按钮、消息时间戳、流式输出渲染
 - **Hook 系统**：pre/post 扩展点，支持自定义中间件
 - **Bridge 层**：权限控制 + 安全沙箱
 - **MCP 协议集成**：原生支持 Model Context Protocol
@@ -101,6 +102,7 @@ simple-agent/
 | `/api/conversations/{id}` | DELETE | 删除指定会话 |
 | `/api/analytics` | GET | 对话分析统计（会话数、消息量、平均长度）|
 | `/api/intent` | POST | `{"message": "..."}` → 意图分类 + 置信度 + 建议回复 |
+| `/api/chat` (stream) | POST | `{"message": "...", "stream": true}` → SSE/流式文本输出（前端自动适配）|
 
 ## 🧪 测试
 

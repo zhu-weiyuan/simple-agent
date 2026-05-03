@@ -54,6 +54,90 @@
   .spinner.active { display: inline-block; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .code-block { background: #0f172a; padding: 8px 12px; border-radius: 6px; margin: 4px 0; font-family: 'Cascadia Code', monospace; font-size: 13px; overflow-x: auto; }
+
+  /* Intent analysis panel */
+  .intent-panel {
+    position: fixed;
+    right: 16px;
+    top: 80px;
+    width: 240px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px;
+    font-size: 12px;
+    color: var(--muted);
+    z-index: 10;
+    transition: opacity 0.3s, transform 0.3s;
+  }
+  .intent-panel.hidden { opacity: 0; pointer-events: none; transform: translateX(20px); }
+  .intent-panel h3 {
+    font-size: 13px;
+    color: var(--text);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .intent-panel h3 button {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px;
+  }
+  .intent-bar {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 4px;
+  }
+  .intent-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.5s ease;
+  }
+  .intent-row {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 6px;
+    font-size: 11px;
+  }
+  .intent-label { color: var(--text); font-weight: 500; }
+  .intent-value { color: var(--accent); }
+
+  /* Message timestamp */
+  .msg-time {
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 4px;
+    opacity: 0.7;
+  }
+
+  /* Quick actions bar */
+  .quick-actions {
+    display: flex;
+    gap: 6px;
+    padding: 8px 16px;
+    border-top: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .quick-action-btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 6px 12px;
+    border-radius: 99px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .quick-action-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
 </style>
 </head>
 <body>
@@ -65,6 +149,23 @@
   <button class="theme-toggle" onclick="toggleTheme()" title="切换主题">☀️</button>
 </header>
 <div id="chat"></div>
+
+<!-- Intent analysis panel -->
+<div class="intent-panel hidden" id="intentPanel">
+  <h3>🔍 意图分析 <button onclick="toggleIntentPanel()" title="关闭">✕</button></h3>
+  <div id="intentContent">等待输入...</div>
+</div>
+
+<!-- Quick actions -->
+<div class="quick-actions">
+  <button class="quick-action-btn" onclick="sendQuick('你好，请介绍一下你自己')">👋 自我介绍</button>
+  <button class="quick-action-btn" onclick="sendQuick('帮我计算 256 * 347 + 1024')">🧮 计算</button>
+  <button class="quick-action-btn" onclick="sendQuick('现在几点？')">🕐 时间</button>
+  <button class="quick-action-btn" onclick="sendQuick('列出当前目录的文件')">📁 文件</button>
+  <button class="quick-action-btn" onclick="analyzeIntent(document.getElementById('user-input').value)" title="分析输入框中的意图">🔍 分析意图</button>
+  <button class="quick-action-btn" onclick="fetchHealth()" title="健康检查">💓 状态</button>
+</div>
+
 <div id="input-area">
   <input id="user-input" type="text" placeholder="输入消息..." autofocus>
   <button id="send-btn" onclick="sendMessage()"><span class="spinner" id="spinner"></span>发送</button>
@@ -92,11 +193,114 @@ function toggleTheme() {
   }
 }
 
-function addMsg(role, text) {
+// Intent panel toggle
+function toggleIntentPanel() {
+  document.getElementById('intentPanel').classList.toggle('hidden');
+}
+
+// Analyze intent of current input or a given text
+async function analyzeIntent(text) {
+  if (!text || !text.trim()) {
+    addMsg('system', '⚠️ 请先输入要分析的内容');
+    return;
+  }
+  const panel = document.getElementById('intentPanel');
+  const content = document.getElementById('intentContent');
+  panel.classList.remove('hidden');
+  content.innerHTML = '<span style="color:var(--muted)">分析中...</span>';
+
+  try {
+    const resp = await fetch('/api/intent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text.trim() }),
+    });
+    const data = await resp.json();
+
+    const intentEmoji = {
+      greeting: '👋', question: '❓', command: '⚡',
+      feedback: '💬', complaint: '😤', general: '💭'
+    };
+    const emoji = intentEmoji[data.intent] || '💭';
+    const confPercent = Math.round((data.confidence || 0) * 100);
+
+    let html = `
+      <div class="intent-row">
+        <span class="intent-label">${emoji} ${data.intent}</span>
+        <span class="intent-value">${confPercent}%</span>
+      </div>
+      <div class="intent-bar"><div class="intent-bar-fill" style="width:${confPercent}%;background:var(--accent)"></div></div>
+    `;
+
+    if (data.all_scores) {
+      html += '<div style="margin-top:8px">';
+      for (const [k, v] of Object.entries(data.all_scores)) {
+        const pct = Math.round(v * 100);
+        const em = intentEmoji[k] || '•';
+        html += `<div class="intent-row">
+          <span>${em} ${k}</span>
+          <span style="color:var(--muted)">${pct}%</span>
+        </div>`;
+      }
+      html += '</div>';
+    }
+
+    if (data.suggestions && data.suggestions.length) {
+      html += '<div style="margin-top:8px;color:var(--muted);font-size:10px">';
+      html += '<b>建议回复:</b><br>' + data.suggestions.slice(0, 2).join('<br>');
+      html += '</div>';
+    }
+
+    content.innerHTML = html;
+  } catch(e) {
+    content.innerHTML = `<span style="color:var(--red)">分析失败: ${e.message}</span>`;
+  }
+}
+
+// Send quick message
+function sendQuick(text) {
+  input.value = text;
+  sendMessage(text);
+}
+
+// Fetch health status
+async function fetchHealth() {
+  try {
+    const resp = await fetch('/api/health');
+    const data = await resp.json();
+    if (data.ok) {
+      const memPct = data.system ? `${data.system.memory_percent}%` : '?';
+      const llmStatus = data.llm && data.llm.reachable ? '🟢 在线' : '🔴 离线';
+      addMsg('system', `💓 ${data.agent} v${data.version} | 内存 ${memPct} | LLM ${llmStatus}`);
+    }
+  } catch(e) {
+    addMsg('system', `⚠️ 健康检查失败: ${e.message}`);
+  }
+}
+
+// Get current time string
+function getTimeStr() {
+  const now = new Date();
+  return now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+}
+
+function addMsg(role, text, skipTime) {
+  const wrapper = document.createElement('div');
+  wrapper.style.cssText = 'display:flex;flex-direction:column;' + (role === 'user' ? 'align-items:flex-end;' : 'align-items:flex-start;');
+
   const div = document.createElement('div');
   div.className = `msg ${role}`;
   div.textContent = text;
-  chat.appendChild(div);
+  wrapper.appendChild(div);
+
+  if (!skipTime && role !== 'system') {
+    const timeDiv = document.createElement('div');
+    timeDiv.className = 'msg-time';
+    timeDiv.textContent = getTimeStr();
+    wrapper.appendChild(timeDiv);
+  }
+
+  chat.appendChild(wrapper);
   chat.scrollTop = chat.scrollHeight;
   return div;
 }
@@ -142,6 +346,9 @@ async function sendMessage(forceText) {
   spinner.classList.add('active');
   addTyping();
 
+  // Auto-analyze intent in background
+  analyzeIntent(text).catch(() => {});
+
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 30000);
@@ -149,7 +356,7 @@ async function sendMessage(forceText) {
     const resp = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, stream: true }),
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
@@ -162,8 +369,60 @@ async function sendMessage(forceText) {
       return;
     }
 
-    const data = await resp.json();
-    addMsg('assistant', data.reply || '(空回复)');
+    // Check if it's SSE streaming or plain JSON
+    const contentType = resp.headers.get('content-type') || '';
+
+    // Streaming response (SSE or plain text chunks)
+    const assistantMsg = addMsg('assistant', '', true);
+    let fullText = '';
+
+    if (contentType.includes('text/event-stream')) {
+      // SSE format: data: {...}\n\n
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const jsonStr = line.slice(6);
+          if (jsonStr === '[DONE]') continue;
+          try {
+            const obj = JSON.parse(jsonStr);
+            const chunk = obj.token || obj.content || '';
+            if (chunk) { fullText += chunk; assistantMsg.textContent = fullText; chat.scrollTop = chat.scrollHeight; }
+          } catch(e) {}
+        }
+      }
+    } else {
+      // Plain streaming: each chunk is raw text appended directly
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        fullText += chunk;
+        assistantMsg.textContent = fullText;
+        chat.scrollTop = chat.scrollHeight;
+      }
+    }
+
+    // Add timestamp after streaming complete
+    const wrapper = assistantMsg.parentElement;
+    if (wrapper) {
+      const timeDiv = document.createElement('div');
+      timeDiv.className = 'msg-time';
+      timeDiv.textContent = getTimeStr();
+      wrapper.appendChild(timeDiv);
+    }
+    // If empty response, show placeholder
+    if (!fullText.trim()) assistantMsg.textContent = '(空回复)';
   } catch(e) {
     removeTyping();
     if (e.name === 'AbortError') {
