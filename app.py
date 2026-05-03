@@ -212,6 +212,61 @@ async def memory_stats():
         return {"error": str(e)}
 
 
+@app.get("/api/conversations")
+async def list_conversations(limit: int = 20):
+    """List recent conversation sessions from memory store.
+
+    Returns a summary of recent conversations including message counts,
+    timestamps, and last messages. Useful for session management dashboards.
+    """
+    try:
+        results = []
+        # Try to get sessions from the agent's memory store
+        if hasattr(agent.memory_store, 'get_sessions'):
+            sessions = agent.memory_store.get_sessions(limit=limit)
+            for s in sessions:
+                results.append({
+                    "session_id": s.get("session_id", "unknown"),
+                    "message_count": s.get("message_count", 0),
+                    "created_at": s.get("created_at", ""),
+                    "last_message": s.get("last_message", "")[:100] if s.get("last_message") else "",
+                })
+        # Fallback: read from facts.json if it exists
+        elif Path("memory/facts.json").exists():
+            with open("memory/facts.json", "r") as f:
+                facts = json.load(f)
+            if isinstance(facts, list):
+                for item in facts[-limit:]:
+                    results.append({
+                        "session_id": item.get("session_id", "unknown"),
+                        "fact": str(item.get("fact", ""))[:100],
+                        "created_at": item.get("created_at", ""),
+                    })
+        return {
+            "conversations": results,
+            "total": len(results),
+            "limit": limit,
+        }
+    except Exception as e:
+        return {"error": str(e), "conversations": []}
+
+
+@app.delete("/api/conversations/{session_id}")
+async def delete_conversation(session_id: str):
+    """Delete a conversation session from memory.
+
+    Removes all messages and facts associated with the given session ID.
+    """
+    try:
+        deleted = False
+        if hasattr(agent.memory_store, 'delete_session'):
+            agent.memory_store.delete_session(session_id)
+            deleted = True
+        return {"deleted": deleted, "session_id": session_id}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 @app.get("/api/card")
 async def agent_card():
     """Get Agent Card (A2A protocol compatible).

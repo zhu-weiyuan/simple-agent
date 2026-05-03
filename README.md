@@ -97,6 +97,8 @@ simple-agent/
 | `/api/tools` | GET | 列出所有已注册工具 |
 | `/api/memory/stats` | GET | 记忆存储统计信息 |
 | `/api/card` | GET | Agent Card (A2A协议兼容的元数据) |
+| `/api/conversations` | GET | 列出最近的对话会话（session管理）|
+| `/api/conversations/{id}` | DELETE | 删除指定会话 |
 
 ## 🧪 测试
 
