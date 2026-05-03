@@ -72,22 +72,26 @@ async def rate_limit_middleware(request: Request, call_next):
     if not request.url.path.startswith("/api/"):
         response = await call_next(request)
         return response
-    
+
     _request_counter["total"] += 1
     client_ip = request.client.host if request.client else "unknown"
-    
+
     if not _rate_limiter.is_allowed(client_ip):
         return HTTPException(
             status_code=429,
             detail={"error": "Rate limit exceeded", "retry_after": _rate_limiter.window}
         )
-    
+
+    # Request timing — measure latency per request
+    start_time = time.time()
     try:
         response = await call_next(request)
+        elapsed = time.time() - start_time
+        response.headers["X-Response-Time"] = f"{elapsed*1000:.1f}ms"
+        return response
     except Exception as e:
         _request_counter["errors"] += 1
         raise
-    return response
 
 from my_agent import SimpleAgent
 agent = SimpleAgent()
@@ -215,9 +219,23 @@ async def agent_card():
     Returns structured agent metadata including name, version,
     capabilities, and supported tools.
     """
+    try:
+        # Prefer agent.card() method if available (newer interface)
+        if hasattr(agent, 'card') and callable(agent.card):
+            card = agent.card()
+            return {
+                "name": card.name,
+                "description": card.description,
+                "version": card.version,
+                "capabilities": card.capabilities,
+                "tools": card.tools,
+            }
+    except Exception:
+        pass
+    # Fallback: build card from agent attributes directly
     return {
         "name": agent.name,
-        "description": agent.description,
+        "description": getattr(agent, 'description', 'SimpleAgent'),
         "version": agent.version,
         "capabilities": [
             "chat",
@@ -228,19 +246,6 @@ async def agent_card():
         ],
         "tools": [name for name in agent.tool_registry.tools.keys()],
         "supported_protocols": ["http", "sse", "a2a"],
-    }
-
-
-@app.get("/api/card")
-async def agent_card():
-    """Get Agent Card (A2A protocol compatible)."""
-    card = agent.card()
-    return {
-        "name": card.name,
-        "description": card.description,
-        "version": card.version,
-        "capabilities": card.capabilities,
-        "tools": card.tools,
     }
 
 

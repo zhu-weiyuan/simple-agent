@@ -17,6 +17,8 @@
 - **Hook 系统**：pre/post 扩展点，支持自定义中间件
 - **Bridge 层**：权限控制 + 安全沙箱
 - **MCP 协议集成**：原生支持 Model Context Protocol
+- **请求延迟监控**：每个 API 响应自动附加 `X-Response-Time` 头部（毫秒级）
+- **Agent Card 健壮性**：优先使用 `agent.card()` 方法，回退到直接属性读取
 
 ## 🏗️ 架构
 
