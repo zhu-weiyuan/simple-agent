@@ -99,6 +99,7 @@ simple-agent/
 | `/api/card` | GET | Agent Card (A2A协议兼容的元数据) |
 | `/api/conversations` | GET | 列出最近的对话会话（session管理）|
 | `/api/conversations/{id}` | DELETE | 删除指定会话 |
+| `/api/analytics` | GET | 对话分析统计（会话数、消息量、平均长度）|
 
 ## 🧪 测试
 

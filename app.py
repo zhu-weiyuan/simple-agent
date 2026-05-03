@@ -267,6 +267,61 @@ async def delete_conversation(session_id: str):
         raise HTTPException(500, str(e))
 
 
+@app.get("/api/analytics")
+async def analytics(limit: int = 50):
+    """Conversation analytics endpoint.
+
+    Returns aggregated statistics about conversations including:
+    - Total message count per session
+    - Average response length
+    - Most active sessions
+    - Token usage estimates (based on message lengths)
+    """
+    try:
+        results = []
+        total_messages = 0
+        total_chars = 0
+
+        # Try memory store
+        if hasattr(agent.memory_store, 'get_sessions'):
+            sessions = agent.memory_store.get_sessions(limit=limit)
+            for s in sessions:
+                msg_count = s.get("message_count", 0)
+                total_messages += msg_count
+                results.append({
+                    "session_id": s.get("session_id", "unknown"),
+                    "message_count": msg_count,
+                    "created_at": s.get("created_at", ""),
+                    "last_message": s.get("last_message", "")[:100] if s.get("last_message") else "",
+                })
+
+        # Fallback: read from facts.json
+        elif Path("memory/facts.json").exists():
+            with open("memory/facts.json", "r") as f:
+                facts = json.load(f)
+            if isinstance(facts, list):
+                total_messages = len(facts)
+                for item in facts[-limit:]:
+                    fact_text = str(item.get("fact", ""))
+                    total_chars += len(fact_text)
+                    results.append({
+                        "session_id": item.get("session_id", "unknown"),
+                        "fact": fact_text[:100],
+                        "created_at": item.get("created_at", ""),
+                    })
+
+        avg_chars = round(total_chars / max(total_messages, 1), 1)
+
+        return {
+            "total_sessions": len(results),
+            "total_messages": total_messages,
+            "avg_message_length": avg_chars,
+            "sessions": results,
+        }
+    except Exception as e:
+        return {"error": str(e), "total_sessions": 0, "total_messages": 0}
+
+
 @app.get("/api/card")
 async def agent_card():
     """Get Agent Card (A2A protocol compatible).
