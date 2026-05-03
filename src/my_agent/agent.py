@@ -394,8 +394,8 @@ class SimpleAgent:
                         timestamp=cit_data["timestamp"],
                     )
                     self._citation_system.add_citation(cit)
-        except Exception:
-            pass
+        except Exception as e:
+            self._debug(f"加载增强状态失败: {e}")
 
     def _save_enhanced_state(self) -> None:
         state_path = self.project_root / "enhanced_state.json"

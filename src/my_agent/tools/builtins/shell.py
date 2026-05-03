@@ -30,8 +30,63 @@ class PowerShellTool(BaseTool):
     }
     tags = ["system", "shell"]
 
-    # 危险命令模式
-    _BLOCK_PATTERNS = ["rm ", "del ", "format-*", "invoke-expression"]
+    # 危险命令模式（按类别分组）
+    _BLOCK_PATTERNS = {
+        # 文件系统破坏
+        "rm ": "删除文件",
+        "del ": "删除文件",
+        "Remove-Item": "删除文件/目录",
+        "format-*": "格式化磁盘",
+        "Clear-Content": "清空文件内容",
+        "Truncate-Content": "截断文件内容",
+        # 远程代码执行
+        "invoke-expression": "动态代码执行",
+        "iex": "动态代码执行(IEX别名)",
+        "invoke-restmethod": "HTTP请求(可能被用于下载恶意脚本)",
+        "irm": "HTTP请求(IRM别名)",
+        "invoke-webrequest": "HTTP请求",
+        "iwrm": "HTTP请求(IWRM别名)",
+        "download-string": "下载字符串",
+        "invoke-command": "远程命令执行",
+        # 系统配置修改
+        "set-executionpolicy": "修改执行策略",
+        "reg add": "修改注册表",
+        "reg delete": "修改注册表",
+        "net user": "用户管理",
+        "net localgroup": "用户组管理",
+        "shutdown": "关机/重启",
+        "restart-computer": "重启计算机",
+        "stop-computer": "关闭计算机",
+        # 数据泄露
+        "certutil -encode": "编码文件(可能用于隐藏数据)",
+        "certutil -decode": "解码文件(可能用于执行隐藏代码)",
+    }
+
+    # 允许的命令白名单（只读操作）
+    _ALLOWED_READONLY = {
+        "get-process", "gps",
+        "get-service", "gsv",
+        "get-eventlog",
+        "get-winevent",
+        "get-childitem", "gci", "ls", "dir",
+        "get-content", "gc", "cat", "type",
+        "test-path", "tp",
+        "get-item", "gi",
+        "get-date",
+        "get-random",
+        "measure-object",
+        "select-string", "sls",
+        "where-object",
+        "sort-object",
+        "group-object",
+        "convertto-json",
+        "convertfrom-json",
+        "write-output",
+        "write-host",
+        "help",
+        "get-help",
+        "get-command",
+    }
 
     def execute(self, params: Dict[str, Any]) -> str:
         command = str(params.get("command", "")).strip()
@@ -39,12 +94,18 @@ class PowerShellTool(BaseTool):
             return "错误：未提供 PowerShell 命令"
 
         cmd_lower = command.lower()
-        for pattern in self._BLOCK_PATTERNS:
+        for pattern, reason in self._BLOCK_PATTERNS.items():
             if pattern.lower() in cmd_lower:
                 return (
-                    f"错误：拒绝执行潜在危险的命令: '{command}'。"
-                    "如需删除文件，请明确说明并获得确认。"
+                    f"错误：拒绝执行危险命令 '{pattern}'（{reason}）。"
+                    "如需此操作，请明确说明并获得确认。"
                 )
+
+        # 检查是否包含管道符 + 可疑组合
+        if any(ch in command for ch in [';', '&', '`', '$']) and any(
+            p in cmd_lower for p in ['http', 'download', 'invoke', 'comobj']
+        ):
+            return "错误：拒绝执行包含可疑模式的复合命令。"
 
         try:
             ps_cmd = (

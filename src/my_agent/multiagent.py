@@ -10,6 +10,7 @@ my_agent.multiagent — 多 Agent 编排
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import time
@@ -265,18 +266,27 @@ class ParallelAgent:
     def __init__(self, agents: List[Tuple[str, Any]]):
         self.agents = agents
 
-    def run(self, user_input: str) -> MultiAgentResult:
-        """并行执行"""
-        start_time = time.time()
-        responses = {}
+    def _run_agent(self, name: str, agent: Any, user_input: str) -> Tuple[str, str]:
+        """Thread worker: run a single agent and return (name, result)."""
+        try:
+            result = agent.run(user_input)
+            return (name, str(result))
+        except Exception as e:
+            return (name, f"Error: {type(e).__name__}: {e}")
 
-        # Sequential execution (true parallel would need threads/async)
-        for name, agent in self.agents:
-            try:
-                result = agent.run(user_input)
-                responses[name] = str(result)
-            except Exception as e:
-                responses[name] = f"Error: {e}"
+    def run(self, user_input: str) -> MultiAgentResult:
+        """真正并行执行（使用 ThreadPoolExecutor）"""
+        start_time = time.time()
+        responses: Dict[str, str] = {}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(self.agents)) as executor:
+            futures = {
+                executor.submit(self._run_agent, name, agent, user_input): name
+                for name, agent in self.agents
+            }
+            for future in concurrent.futures.as_completed(futures):
+                name, result = future.result()
+                responses[name] = result
 
         final = "\n\n".join(
             f"### {name}\n{result}" for name, result in responses.items()
