@@ -94,6 +94,7 @@ simple-agent/
 | `/api/metrics` | GET | Prometheus-style 文本指标 |
 | `/api/tools` | GET | 列出所有已注册工具 |
 | `/api/memory/stats` | GET | 记忆存储统计信息 |
+| `/api/card` | GET | Agent Card (A2A协议兼容的元数据) |
 
 ## 🧪 测试
 

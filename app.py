@@ -208,6 +208,42 @@ async def memory_stats():
         return {"error": str(e)}
 
 
+@app.get("/api/card")
+async def agent_card():
+    """Get Agent Card (A2A protocol compatible).
+
+    Returns structured agent metadata including name, version,
+    capabilities, and supported tools.
+    """
+    return {
+        "name": agent.name,
+        "description": agent.description,
+        "version": agent.version,
+        "capabilities": [
+            "chat",
+            "streaming",
+            "tool_use",
+            "memory",
+            "enhanced_pipeline",
+        ],
+        "tools": [name for name in agent.tool_registry.tools.keys()],
+        "supported_protocols": ["http", "sse", "a2a"],
+    }
+
+
+@app.get("/api/card")
+async def agent_card():
+    """Get Agent Card (A2A protocol compatible)."""
+    card = agent.card()
+    return {
+        "name": card.name,
+        "description": card.description,
+        "version": card.version,
+        "capabilities": card.capabilities,
+        "tools": card.tools,
+    }
+
+
 # Static files mounted AFTER API routes
 app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
 
