@@ -62,32 +62,6 @@ class PowerShellTool(BaseTool):
         "certutil -decode": "解码文件(可能用于执行隐藏代码)",
     }
 
-    # 允许的命令白名单（只读操作）
-    _ALLOWED_READONLY = {
-        "get-process", "gps",
-        "get-service", "gsv",
-        "get-eventlog",
-        "get-winevent",
-        "get-childitem", "gci", "ls", "dir",
-        "get-content", "gc", "cat", "type",
-        "test-path", "tp",
-        "get-item", "gi",
-        "get-date",
-        "get-random",
-        "measure-object",
-        "select-string", "sls",
-        "where-object",
-        "sort-object",
-        "group-object",
-        "convertto-json",
-        "convertfrom-json",
-        "write-output",
-        "write-host",
-        "help",
-        "get-help",
-        "get-command",
-    }
-
     def execute(self, params: Dict[str, Any]) -> str:
         command = str(params.get("command", "")).strip()
         if not command:
@@ -101,8 +75,8 @@ class PowerShellTool(BaseTool):
                     "如需此操作，请明确说明并获得确认。"
                 )
 
-        # 检查是否包含管道符 + 可疑组合
-        if any(ch in command for ch in [';', '&', '`', '$']) and any(
+        # 检查命令链接 + 可疑操作（避免 $ 字符误杀，PowerShell 变量极常见）
+        if any(ch in command for ch in [';', '&', '`']) and any(
             p in cmd_lower for p in ['http', 'download', 'invoke', 'comobj']
         ):
             return "错误：拒绝执行包含可疑模式的复合命令。"
