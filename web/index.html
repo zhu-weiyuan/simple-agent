@@ -204,7 +204,8 @@
 </div>
 
 <div id="input-area">
-  <input id="user-input" type="text" placeholder="输入消息..." autofocus>
+  <input id="user-input" type="text" placeholder="输入消息..." autofocus maxlength="4000">
+  <span id="char-count" style="font-size:10px;color:var(--muted);padding:4px 0;flex-shrink:0">0/4000</span>
   <button id="send-btn" onclick="sendMessage()"><span class="spinner" id="spinner"></span>发送</button>
 </div>
 
@@ -216,6 +217,11 @@ const spinner = document.getElementById('spinner');
 let loading = false;
 
 input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }});
+// Character counter
+input.addEventListener('input', () => {
+  const cc = document.getElementById('char-count');
+  if (cc) cc.textContent = input.value.length + '/4000';
+});
 
 // Theme toggle
 function toggleTheme() {
@@ -321,13 +327,32 @@ function getTimeStr() {
   return now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 }
 
+// Markdown renderer for assistant messages
+function renderMd(text) {
+  if (!text) return '';
+  let s = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  s = s.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  s = s.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  s = s.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  s = s.replace(/^(?:[-*])\s+(.+)$/gm, '<li>$1</li>');
+  s = s.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+  s = s.replace(/\n\n/g, '<br><br>');
+  return s;
+}
 function addMsg(role, text, skipTime) {
   const wrapper = document.createElement('div');
   wrapper.style.cssText = 'display:flex;flex-direction:column;' + (role === 'user' ? 'align-items:flex-end;' : 'align-items:flex-start;');
 
   const div = document.createElement('div');
   div.className = `msg ${role}`;
-  div.textContent = text;
+  if (role === 'assistant') {
+    div.innerHTML = renderMd(text);
+  } else {
+    div.textContent = text;
+  }
   wrapper.appendChild(div);
 
   if (!skipTime && role !== 'system') {
