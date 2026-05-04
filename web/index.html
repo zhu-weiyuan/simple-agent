@@ -55,6 +55,43 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .code-block { background: #0f172a; padding: 8px 12px; border-radius: 6px; margin: 4px 0; font-family: 'Cascadia Code', monospace; font-size: 13px; overflow-x: auto; }
 
+  /* Markdown rendering in messages */
+  .msg.assistant p { margin: 4px 0; }
+  .msg.assistant strong, .msg.assistant b { font-weight: 700; }
+  .msg.assistant em { font-style: italic; }
+  .msg.assistant code {
+    background: rgba(255,255,255,0.08); padding: 1px 5px;
+    border-radius: 4px; font-size: 12.5px;
+    font-family: 'Cascadia Code', 'Consolas', monospace;
+  }
+  [data-theme="light"] .msg.assistant code {
+    background: #f1f5f9; color: #c7254e;
+  }
+  .msg.assistant pre {
+    background: #0f172a; padding: 8px 12px; border-radius: 6px;
+    margin: 6px 0; font-size: 12.5px; overflow-x: auto;
+    font-family: 'Cascadia Code', monospace; line-height: 1.4;
+  }
+  [data-theme="light"] .msg.assistant pre { background: #f8fafc; border: 1px solid #e2e8f0; }
+  .msg.assistant ul, .msg.assistant ol {
+    margin: 4px 0 4px 20px; padding: 0;
+  }
+  .msg.assistant li { margin-bottom: 3px; }
+  .msg.assistant h1, .msg.assistant h2, .msg.assistant h3 {
+    font-size: 14px; font-weight: 700; margin: 8px 0 4px;
+  }
+
+  /* Copy button on messages */
+  .msg-actions { display: flex; gap: 4px; margin-top: 4px; opacity: 0; transition: opacity 0.15s; }
+  .msg:hover .msg-actions { opacity: 1; }
+  .msg-action-btn {
+    background: none; border: none; color: var(--muted); cursor: pointer;
+    font-size: 11px; padding: 2px 6px; border-radius: 4px;
+    transition: all 0.15s;
+  }
+  .msg-action-btn:hover { background: rgba(255,255,255,0.1); color: var(--text); }
+  [data-theme="light"] .msg-action-btn:hover { background: #f1f5f9; }
+
   /* Intent analysis panel */
   .intent-panel {
     position: fixed;
