@@ -39,6 +39,9 @@ usage.txt
 syllogism.db
 ~/.my-agent
 
+# Checkpoints (generated at runtime)
+checkpoints/
+
 # Non-source documents (keep README, technical docs)
 AGENT_FRAMEWORKS_VERIFIED.md
 AGENT_TECH_PAPERS_2026_04*.md
