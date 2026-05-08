@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.bridge.permissions — 工具权限控制
 
-参考 Claude Code 三级权限：alwaysAllow / ask / deny
+参考 Claude Code 三级权限:alwaysAllow / ask / deny
 """
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """对比 requests 和 httpx 的差异"""
 import requests
 import httpx

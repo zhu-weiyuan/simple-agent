@@ -2,11 +2,11 @@
 """
 my_agent.multiagent — 多 Agent 编排
 
-参考 strands-agents 和 LangGraph 设计：
-- Supervisor 模式：一个 supervisor 调度多个 specialist agents
-- Agent-as-Tool：agent 作为工具被其他 agent 调用
-- 并行执行：多个 agent 同时处理不同任务
-- 链式执行：agent 输出作为下一个 agent 的输入
+参考 strands-agents 和 LangGraph 设计:
+- Supervisor 模式:一个 supervisor 调度多个 specialist agents
+- Agent-as-Tool:agent 作为工具被其他 agent 调用
+- 并行执行:多个 agent 同时处理不同任务
+- 链式执行:agent 输出作为下一个 agent 的输入
 """
 from __future__ import annotations
 
@@ -49,9 +49,9 @@ class MultiAgentResult:
 
 
 class SupervisorAgent:
-    """Supervisor 模式：一个 supervisor 调度多个 specialist agents
+    """Supervisor 模式:一个 supervisor 调度多个 specialist agents
 
-    参考 strands-agents 多 agent 架构：
+    参考 strands-agents 多 agent 架构:
     1. Supervisor 接收用户输入
     2. 决定哪个 specialist 处理（或并行调用多个）
     3. 汇总结果返回
@@ -151,7 +151,7 @@ class SupervisorAgent:
     def _decide(self, user_input: str) -> str | List[str]:
         """决定使用哪个 agent
 
-        简单实现：基于关键词匹配。
+        简单实现:基于关键词匹配。
         生产环境应该用 LLM 来做路由决策。
         """
         if not self.roles:
@@ -207,7 +207,7 @@ class SupervisorAgent:
 
 
 class AgentChain:
-    """链式 Agent：输出作为下一个的输入
+    """链式 Agent:输出作为下一个的输入
 
     Example:
         ```python
@@ -250,7 +250,7 @@ class AgentChain:
 
 
 class ParallelAgent:
-    """并行 Agent：同时调用多个 agent
+    """并行 Agent:同时调用多个 agent
 
     Example:
         ```python
@@ -259,7 +259,7 @@ class ParallelAgent:
             ("keypoints", keypoints_agent),
             ("sentiment", sentiment_agent),
         ])
-        result = parallel.run("分析这篇文章：...")
+        result = parallel.run("分析这篇文章:...")
         ```
     """
 

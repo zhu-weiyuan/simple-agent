@@ -2,7 +2,7 @@
 """
 Code Review Example — AI 代码审查助手
 
-展示 SimpleAgent 框架的核心能力：
+展示 SimpleAgent 框架的核心能力:
 - 图引擎编排 (Graph Engine)
 - 工具注册机制 (Tool Registry)
 - LLM 抽象层 (LLM Client)

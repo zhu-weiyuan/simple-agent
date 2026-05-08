@@ -122,7 +122,7 @@ def review(diff_text: str, llm_client=None) -> dict:
     # If LLM available, generate enriched review
     if llm_client:
         try:
-            prompt = f"""请对以下代码变更进行审查：
+            prompt = f"""请对以下代码变更进行审查:
 
 ## 变更摘要
 {summary}
@@ -139,7 +139,7 @@ def review(diff_text: str, llm_client=None) -> dict:
 {diff_preview}
 ```
 
-请生成结构化审查报告（JSON格式）：
+请生成结构化审查报告（JSON格式）:
 {{"summary": "变更概述", "score": 85, "issues": [...], "recommendations": [...]}}"""
             
             review_text = llm_client.chat(

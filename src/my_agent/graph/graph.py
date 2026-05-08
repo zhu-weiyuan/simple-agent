@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.graph.graph — Graph 类
 
-参考 LangGraph 设计：
+参考 LangGraph 设计:
 - 注册节点和边
 - 构建执行图（邻接表）
 - 带检查点的循环执行
@@ -20,7 +20,7 @@ from .node import BaseNode, Edge, ConditionalEdge
 class Graph:
     """图编排引擎
 
-    用法：
+    用法:
     ```python
     graph = Graph(nodes={"start": start_node})
     graph.add_edge("start", "router")
@@ -70,7 +70,7 @@ class Graph:
     def run(self, initial_state: GraphState, entry_node: str = "start") -> GraphState:
         """执行图
 
-        流程：
+        流程:
         1. 从 entry_node 开始
         2. 找到当前节点的所有出边
         3. 执行目标节点

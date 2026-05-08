@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.tools.builtins.file — 文件系统工具
 """
@@ -30,14 +30,14 @@ class ReadFileTool(BaseTool):
     def execute(self, params: Dict[str, Any]) -> str:
         path_str = str(params.get("path", "")).strip()
         if not path_str:
-            return "错误：未提供文件路径"
+            return "错误:未提供文件路径"
 
         try:
             p = Path(path_str).resolve()
             if not p.exists():
-                return f"文件不存在：{path_str}"
+                return f"文件不存在:{path_str}"
             if not p.is_file():
-                return f"不是文件：{path_str}"
+                return f"不是文件:{path_str}"
             if p.stat().st_size > 50000:
                 return (
                     f"文件过大（{p.stat().st_size} bytes），超过50KB限制。"
@@ -49,7 +49,7 @@ class ReadFileTool(BaseTool):
                 content = content[:9800] + "\n...（内容截断，超过10000字符）"
             return content
         except Exception as e:
-            return f"读取文件失败：{type(e).__name__}: {e}"
+            return f"读取文件失败:{type(e).__name__}: {e}"
 
 
 class ListFilesTool(BaseTool):
@@ -73,9 +73,9 @@ class ListFilesTool(BaseTool):
         try:
             p = Path(path_str).resolve()
             if not p.exists():
-                return f"路径不存在：{path_str}"
+                return f"路径不存在:{path_str}"
             if not p.is_dir():
-                return f"不是目录：{path_str}"
+                return f"不是目录:{path_str}"
 
             entries = []
             for item in p.iterdir():
@@ -83,9 +83,9 @@ class ListFilesTool(BaseTool):
                 entries.append(f"{kind} {item.name}")
 
             if not entries:
-                return f"目录为空：{path_str}"
+                return f"目录为空:{path_str}"
 
             entries.sort()
             return f"目录: {p}\n" + "\n".join(entries)
         except Exception as e:
-            return f"列出目录失败：{type(e).__name__}: {e}"
+            return f"列出目录失败:{type(e).__name__}: {e}"

@@ -2,7 +2,7 @@
 """
 my_agent.types.agent — Agent 类型定义
 
-参考 strands-agents/sdk-python 和 A2A 协议设计：
+参考 strands-agents/sdk-python 和 A2A 协议设计:
 - AgentBase Protocol: 定义标准 agent 接口
 - AgentResult: 结构化结果
 - AgentState: 可序列化状态

@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 实时幻觉检测系统 - 混合检测（常识锚点 + LLM + 网络搜索）
-基于概念：SelfCheckGPT + HALU + FaCt
-参考论文：
+基于概念:SelfCheckGPT + HALU + FaCt
+参考论文:
 - SelfCheckGENT: mitigating factual hallucations (2023)
 - HALU: hallucination detection in LLMs (2023) 
 - Fact: factuality detection with LLMs (2023)
@@ -27,7 +27,7 @@ class HallucinationResult:
 
 
 class HallucinationDetector:
-    """混合幻觉检测器：常识锚点 + 规则 + LLM + 网络搜索"""
+    """混合幻觉检测器:常识锚点 + 规则 + LLM + 网络搜索"""
 
     def __init__(self, use_llm: bool = True, use_search: bool = False):
         self.use_llm = use_llm and self._has_llm()

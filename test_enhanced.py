@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 SimpleAgent 增强模块测试脚本
 测试所有增强模块的功能
@@ -59,13 +59,13 @@ def test_query_router():
         
         # 验证基本逻辑
         if analysis.tier != expected_tier:
-            print(f"  ❌ 错误：期望 {expected_tier.value}，实际 {analysis.tier.value}")
+            print(f"  ❌ 错误:期望 {expected_tier.value}，实际 {analysis.tier.value}")
             all_passed = False
         elif analysis.strategy != expected_strategy:
-            print(f"  ❌ 错误：期望 {expected_strategy.value}，实际 {analysis.strategy.value}")
+            print(f"  ❌ 错误:期望 {expected_strategy.value}，实际 {analysis.strategy.value}")
             all_passed = False
         else:
-            print(f"  ✅ 通过：{expected_tier.value} 策略正确")
+            print(f"  ✅ 通过:{expected_tier.value} 策略正确")
     
     print(f"\n查询复杂度分类器测试: {'✅ 通过' if all_passed else '❌ 失败'}")
     return all_passed
@@ -113,7 +113,7 @@ def test_persona_memory():
     
     # Verify that we got some facts
     if not facts:
-        print("❌ 错误：没有提取到任何事实")
+        print("❌ 错误:没有提取到任何事实")
         return False
     
     print("✅ Persona 记忆提取测试通过")
@@ -149,16 +149,16 @@ def test_hallucination_detector():
         
         # 验证基本逻辑
         if result.is_hallucination != expected_hallucination:
-            print(f"  ❌ 错误：期望幻觉={expected_hallucination}，实际={result.is_hallucination}")
+            print(f"  ❌ 错误:期望幻觉={expected_hallucination}，实际={result.is_hallucination}")
             all_passed = False
         elif result.is_hallucination and result.hallucination_type != expected_type:
-            print(f"  ❌ 错误：期望类型={expected_type}，实际={result.hallucination_type}")
+            print(f"  ❌ 错误:期望类型={expected_type}，实际={result.hallucination_type}")
             all_passed = False
         elif result.is_hallucination and not result.evidence:
-            print("  ❌ 错误：检测到幻觉但没有证据")
+            print("  ❌ 错误:检测到幻觉但没有证据")
             all_passed = False
         else:
-            print(f"  ✅ 通过：检测结果正确")
+            print(f"  ✅ 通过:检测结果正确")
     
     print(f"\n幻觉检测测试: {'✅ 通过' if all_passed else '❌ 失败'}")
     return all_passed
@@ -193,13 +193,13 @@ def test_deterministic_citation():
         
         # 验证基本逻辑
         if result.has_citation != expected_has_citation:
-            print(f"  ❌ 错误：期望引用={expected_has_citation}，实际={result.has_citation}")
+            print(f"  ❌ 错误:期望引用={expected_has_citation}，实际={result.has_citation}")
             all_passed = False
         elif result.has_citation and not result.citations:
-            print("  ❌ 错误：检测到引用但没有引用内容")
+            print("  ❌ 错误:检测到引用但没有引用内容")
             all_passed = False
         else:
-            print(f"  ✅ 通过：检测结果正确")
+            print(f"  ✅ 通过:检测结果正确")
     
     print(f"\n确定性引用测试: {'✅ 通过' if all_passed else '❌ 失败'}")
     return all_passed
@@ -256,10 +256,10 @@ def test_multi_index_retrieval():
         
         # 验证基本逻辑
         if not results:
-            print("  ❌ 错误：未返回任何结果")
+            print("  ❌ 错误:未返回任何结果")
             all_passed = False
         else:
-            print("  ✅ 通过：返回了结果")
+            print("  ✅ 通过:返回了结果")
     
     print(f"\n多索引混合检索测试: {'✅ 通过' if all_passed else '❌ 失败'}")
     return all_passed
@@ -298,7 +298,7 @@ async def test_streaming_output():
     
     # Verify we got expected events
     if not chunks or not tool_events or not error_events:
-        print("❌ 错误：没有收到预期的事件")
+        print("❌ 错误:没有收到预期的事件")
         return False
     
     print("✅ 流式输出测试通过")

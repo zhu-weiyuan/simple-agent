@@ -1,7 +1,7 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 多索引混合检索系统
-基于论文：VectorRAG 3.0: Multi-Index Hybrid Retrieval with Cross-Domain Fusion
+基于论文:VectorRAG 3.0: Multi-Index Hybrid Retrieval with Cross-Domain Fusion
 arXiv: 2604.11234v1
 """
 from __future__ import annotations

@@ -2,7 +2,7 @@
 """
 my_agent.tools.structured_output — 结构化输出工具
 
-参考 strands-agents structured_output_tool 设计：
+参考 strands-agents structured_output_tool 设计:
 - 强制 LLM 输出指定 Pydantic 模型格式
 - 自动验证和重试
 - 支持嵌套模型
@@ -170,7 +170,7 @@ class StructuredOutputTool:
 
         schema_str = json.dumps(self.json_schema, indent=2, ensure_ascii=False)
         return (
-            "你必须以 JSON 格式输出，严格遵循以下 schema：\n"
+            "你必须以 JSON 格式输出，严格遵循以下 schema:\n"
             f"```\n{schema_str}\n```\n\n"
             "只输出 JSON，不要包含其他文字。"
         )

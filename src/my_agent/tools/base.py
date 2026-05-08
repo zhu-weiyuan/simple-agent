@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.tools.base — 工具基类
 
-参考 Claude Code Tool.ts 设计：
+参考 Claude Code Tool.ts 设计:
 - BaseTool: 抽象基类，定义工具接口
 - 子类实现 execute() 方法
 - 自动注册到 ToolRegistry
@@ -19,13 +19,13 @@ class BaseTool(ABC):
     """
     工具基类。
 
-    子类应实现：
+    子类应实现:
     - name: 工具名称
     - description: 工具描述
     - parameters: JSON Schema 参数定义
     - execute(params): 工具执行逻辑
 
-    使用方式：
+    使用方式:
         class MyTool(BaseTool):
             name = "my_tool"
             description = "Do something"

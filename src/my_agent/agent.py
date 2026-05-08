@@ -1,10 +1,10 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.agent — SimpleAgent 主入口
 
-v2.0 架构（融合最新 Agent 框架最佳实践）：
+v2.0 架构（融合最新 Agent 框架最佳实践）:
 
-核心层（参考 strands-agents SDK）：
+核心层（参考 strands-agents SDK）:
 - QueryEngine: 核心循环（core/engine.py）
 - AgentBase Protocol: 标准 agent 接口（types/agent.py）
 - AgentResult: 结构化结果（types/agent.py）
@@ -17,17 +17,17 @@ v2.0 架构（融合最新 Agent 框架最佳实践）：
 - Bridge: 桥接层（bridge/base.py）
 - EnhancedPipeline: 增强流水线（enhanced/）
 
-多 Agent 层（参考 A2A Protocol + LangGraph）：
+多 Agent 层（参考 A2A Protocol + LangGraph）:
 - A2A: Agent-to-Agent 协议（a2a.py）
 - AgentAsTool: Agent 作为工具（tools/agent_tool.py）
 - SupervisorAgent: 多 agent 编排（multiagent.py）
 - AgentChain: 链式执行（multiagent.py）
 - ParallelAgent: 并行执行（multiagent.py）
 
-结构化输出（参考 strands-agents structured_output）：
+结构化输出（参考 strands-agents structured_output）:
 - StructuredOutputTool: 强制 JSON Schema 输出（tools/structured_output.py）
 
-职责：
+职责:
 - 组装所有组件
 - 提供 run() / run_stream() / invoke() 公共 API
 - AgentBase Protocol 兼容
@@ -165,13 +165,13 @@ class SimpleAgent:
     """
     v2.0 增强型 Python Agent（兼容 AgentBase Protocol）。
 
-    融合最新 Agent 框架最佳实践：
+    融合最新 Agent 框架最佳实践:
     - strands-agents: AgentBase Protocol, AgentResult, Agent-as-Tool
     - A2A Protocol: Agent Card, 任务状态, 互操作
     - LangGraph: 图状态管理
     - AgentScope Runtime: 生产级特性
 
-    架构分层：
+    架构分层:
     ```
     SimpleAgent (编排层)
     ├── QueryEngine (核心循环)
@@ -190,7 +190,7 @@ class SimpleAgent:
     BASE_SYSTEM_PROMPT = (
         "你是一个教学型 Python Agent，运行在 Windows 系统上。"
         "当可以直接回答时就直接回答；当需要精确外部信息时再调用工具。"
-        "你拥有以下能力："
+        "你拥有以下能力:"
         "- execute_powershell: 执行 PowerShell 命令"
         "- read_file: 读取文件内容"
         "- list_files: 列出目录中的文件和文件夹"
@@ -327,18 +327,18 @@ class SimpleAgent:
                 )
             self._debug(f"已加载 {len(mcp_tools)} 个 MCP 工具")
         except Exception as e:
-            self._debug(f"MCP 初始化失败：{e}")
+            self._debug(f"MCP 初始化失败:{e}")
             self._mcp_client = None
 
     def _make_mcp_tool_wrapper(self, tool_name: str):
         def wrapper(params: Dict[str, Any]) -> str:
             if self._mcp_client is None:
-                return "错误：MCP 客户端未启动"
+                return "错误:MCP 客户端未启动"
             try:
                 result = self._mcp_client.call_tool(tool_name, params)
                 return str(result)
             except Exception as e:
-                return f"MCP 调用失败：{type(e).__name__}: {e}"
+                return f"MCP 调用失败:{type(e).__name__}: {e}"
 
         return wrapper
 
@@ -495,7 +495,7 @@ class SimpleAgent:
         extra_parts: List[str] = []
         if memory_prompt:
             extra_parts.append(
-                "以下是与当前问题相关的长期记忆，请在回答时参考：\n" + memory_prompt
+                "以下是与当前问题相关的长期记忆，请在回答时参考:\n" + memory_prompt
             )
         if context["query_tier"] and not context["query_tier"].startswith("tier_1"):
             extra_parts.append(
@@ -547,7 +547,7 @@ class SimpleAgent:
         """
         处理用户输入，返回回复。
 
-        流程：
+        流程:
         1. 基础记忆召回
         2. 增强流水线（路由 → 检索 → Persona → 生成 → 检测 → 引用）
         3. 记忆自动沉淀
@@ -643,7 +643,7 @@ class SimpleAgent:
             duration = (time.time() - start_time) * 1000
             return AgentResult(
                 stop_reason=StopReason.ERROR,
-                message=Message.assistant(f"错误：{type(e).__name__}: {e}"),
+                message=Message.assistant(f"错误:{type(e).__name__}: {e}"),
                 metrics=AgentMetrics(duration_ms=duration),
             )
 

@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.tools.registry — 工具注册表
 
-参考 Claude Code ToolRegistry，支持：
+参考 Claude Code ToolRegistry，支持:
 - 声明式注册（装饰器风格）
 - schema 自动生成
 - 分组和标签
@@ -41,7 +41,7 @@ class ToolRegistry:
     """
     工具注册中心。
 
-    用法：
+    用法:
         registry = ToolRegistry()
 
         @registry.register(

@@ -1,7 +1,7 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 流式输出系统
-基于论文：AutoGen 2.0: Next-Generation Multi-Agent Framework with Native Tool Use and Streaming
+基于论文:AutoGen 2.0: Next-Generation Multi-Agent Framework with Native Tool Use and Streaming
 arXiv: 2604.09871v2
 """
 from __future__ import annotations

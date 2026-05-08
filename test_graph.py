@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """LangGraph 风格图编排引擎 - 精简测试"""
 import sys
 import io
@@ -24,7 +24,7 @@ def output_node(state):
     return state
 
 def test_basic_graph():
-    """测试1：基本图执行"""
+    """测试1:基本图执行"""
     graph = (Graph()
         .register_node("greeting", greet_node)
         .register_node("llm_call", llm_node)
@@ -45,7 +45,7 @@ def test_basic_graph():
     return True
 
 def test_conditional_edge():
-    """测试2：条件边路由"""
+    """测试2:条件边路由"""
     def route_condition(state):
         last_msg = state.messages[-1].get("content", "").lower() if state.messages else ""
         return "llm_call" if "hi" in last_msg else "final_output"
@@ -60,13 +60,13 @@ def test_conditional_edge():
     graph.add_conditional_edge("router", route_condition, ["llm_call", "final_output"])
     graph.add_edge("llm_call", "final_output")
 
-    # 测试1：包含 "hi" -> 走 llm_call
+    # 测试1:包含 "hi" -> 走 llm_call
     state1 = GraphState()
     state1.add_message("user", "Hi! Tell me about yourself.")
     result1 = graph.run(state1, entry_node="greeting")
     assert "llm_call" in result1.execution_path
 
-    # 测试2：不包含 "hi" -> 走 final_output
+    # 测试2:不包含 "hi" -> 走 final_output
     state2 = GraphState()
     state2.add_message("user", "Calculate 5 * 3")
     result2 = graph.run(state2, entry_node="greeting")
@@ -76,7 +76,7 @@ def test_conditional_edge():
     return True
 
 def test_checkpoint():
-    """测试3：检查点系统"""
+    """测试3:检查点系统"""
     graph = (Graph()
         .register_node("greeting", greet_node)
         .register_node("llm_call", llm_node))
@@ -89,7 +89,7 @@ def test_checkpoint():
     return True
 
 def test_graph_builder():
-    """测试4：Builder 模式"""
+    """测试4:Builder 模式"""
     from my_agent.graph.graph import GraphBuilder
 
     graph = GraphBuilder().entry_point("greeting").build()

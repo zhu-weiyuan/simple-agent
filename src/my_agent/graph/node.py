@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.graph.node — Node & Edge
 
-参考 LangGraph 设计：
+参考 LangGraph 设计:
 - Node: 图中的处理单元，接收状态返回新状态
 - Edge: 连接节点的规则（普通边 / 条件边）
 """
@@ -28,7 +28,7 @@ class BaseNode(ABC):
 
 
 def node(node_name: str = ""):
-    """装饰器：将函数转为 Node"""
+    """装饰器:将函数转为 Node"""
     def decorator(fn: Callable[[GraphState], GraphState]) -> BaseNode:
         actual_name = node_name or fn.__name__
 
@@ -49,7 +49,7 @@ def node(node_name: str = ""):
 # ── Edge（边）───────────────────────────────────────
 
 class Edge:
-    """普通边：固定路由 A → B"""
+    """普通边:固定路由 A → B"""
 
     def __init__(self, from_node: str, to_node: str) -> None:
         self.from_node = from_node
@@ -57,7 +57,7 @@ class Edge:
 
 
 class ConditionalEdge:
-    """条件边：根据状态决定路由 A → [B/C/D]
+    """条件边:根据状态决定路由 A → [B/C/D]
 
     condition_fn(state) 返回要路由到的节点名称
     """

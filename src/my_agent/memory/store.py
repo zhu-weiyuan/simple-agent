@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.memory.store — 记忆存储
 
@@ -139,11 +139,11 @@ class MemoryStore:
         stable_facts = recalled.facts.get("stable_facts", {})
 
         if user_prefs:
-            parts.append(f"用户偏好：{json.dumps(user_prefs, ensure_ascii=False)}")
+            parts.append(f"用户偏好:{json.dumps(user_prefs, ensure_ascii=False)}")
         if project_state:
-            parts.append(f"项目状态：{json.dumps(project_state, ensure_ascii=False)}")
+            parts.append(f"项目状态:{json.dumps(project_state, ensure_ascii=False)}")
         if stable_facts:
-            parts.append(f"稳定事实：{json.dumps(stable_facts, ensure_ascii=False)}")
+            parts.append(f"稳定事实:{json.dumps(stable_facts, ensure_ascii=False)}")
         if recalled.matched_lessons:
             filtered = [
                 l for l in recalled.matched_lessons
@@ -169,17 +169,17 @@ class MemoryStore:
         text = user_input.strip()
         lower = text.lower()
 
-        triggers = ["记住这个", "记住：", "记住", "remember this", "remember:"]
+        triggers = ["记住这个", "记住:", "记住", "remember this", "remember:"]
         if not any(trigger in lower for trigger in triggers):
             return False
 
         content = text
         for trigger in [
-            "记住这个", "记住：", "记住",
+            "记住这个", "记住:", "记住",
             "Remember this", "remember this", "remember:",
         ]:
             content = content.replace(trigger, "")
-        content = content.strip(" ：:")
+        content = content.strip(" ::")
         if not content:
             return False
 

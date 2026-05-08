@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.bridge.base — Bridge 基类
 
@@ -70,16 +70,16 @@ class LocalBridge(Bridge):
             return text or "命令执行成功，无输出。"
 
         except subprocess.TimeoutExpired:
-            return f"错误：命令执行超时（{timeout_sec:.0f}秒限制）"
+            return f"错误:命令执行超时（{timeout_sec:.0f}秒限制）"
         except Exception as e:
-            return f"命令执行失败：{type(e).__name__}: {e}"
+            return f"命令执行失败:{type(e).__name__}: {e}"
 
     def read_file(self, path: str, max_bytes: int = 50000) -> str:
         p = Path(path).resolve()
         if not p.exists():
-            return f"文件不存在：{path}"
+            return f"文件不存在:{path}"
         if not p.is_file():
-            return f"不是文件：{path}"
+            return f"不是文件:{path}"
         if p.stat().st_size > max_bytes:
             return f"文件过大（{p.stat().st_size} bytes），超过 {max_bytes} 限制"
 
@@ -91,9 +91,9 @@ class LocalBridge(Bridge):
     def list_directory(self, path: str) -> str:
         p = Path(path).resolve()
         if not p.exists():
-            return f"路径不存在：{path}"
+            return f"路径不存在:{path}"
         if not p.is_dir():
-            return f"不是目录：{path}"
+            return f"不是目录:{path}"
 
         entries = []
         for item in sorted(p.iterdir()):
@@ -101,5 +101,5 @@ class LocalBridge(Bridge):
             entries.append(f"{kind} {item.name}")
 
         if not entries:
-            return f"目录为空：{path}"
+            return f"目录为空:{path}"
         return f"目录: {p}\n" + "\n".join(entries)

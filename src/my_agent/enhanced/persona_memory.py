@@ -1,7 +1,7 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 Persona 记忆提取系统 - LLM 驱动版
-基于论文：Synthius-Mem: Brain-Inspired Hallucination-Resistant Persona Memory
+基于论文:Synthius-Mem: Brain-Inspired Hallucination-Resistant Persona Memory
 arXiv: 2604.11563v1
 """
 from __future__ import annotations

@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.message — 向后兼容 shim
 
@@ -8,5 +8,5 @@ my_agent.message — 向后兼容 shim
 from .types.message import Role as MessageRole
 from .types.message import Message, ToolCall
 
-# 向后兼容：旧代码使用 MessageRole 而不是 Role
+# 向后兼容:旧代码使用 MessageRole 而不是 Role
 __all__ = ["MessageRole", "Message", "ToolCall"]

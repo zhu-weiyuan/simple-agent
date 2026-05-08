@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """MCP (Model Context Protocol) 客户端，使用 stdio + JSON-RPC 2.0。"""
 
@@ -87,7 +87,7 @@ class MCPClient:
             if item.get("type") == "text":
                 result += item.get("text", "")
             elif item.get("type") == "error":
-                raise MCPError(f"工具错误：{item.get('text', '未知错误')}")
+                raise MCPError(f"工具错误:{item.get('text', '未知错误')}")
         return result or "（空结果）"
 
     def _send_request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -106,13 +106,13 @@ class MCPClient:
             self.process.stdin.flush()
         except Exception as e:
             self._pending_requests.pop(request_id, None)
-            raise MCPError(f"发送请求失败：{e}")
+            raise MCPError(f"发送请求失败:{e}")
 
         try:
             response = response_queue.get(timeout=30)
         except queue.Empty:
             self._pending_requests.pop(request_id, None)
-            raise MCPError(f"请求超时：{method}")
+            raise MCPError(f"请求超时:{method}")
 
         self._pending_requests.pop(request_id, None)
 
@@ -141,7 +141,7 @@ class MCPClient:
                 if request_id is not None and request_id in self._pending_requests:
                     self._pending_requests[request_id].put(message)
             except Exception as e:
-                logger.error(f"读取 MCP 响应时出错：{e}")
+                logger.error(f"读取 MCP 响应时出错:{e}")
                 break
 
     def __enter__(self):

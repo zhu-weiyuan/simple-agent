@@ -1,12 +1,12 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.types.message — 统一消息模型
 
-参考 Claude Code message.ts 设计：
+参考 Claude Code message.ts 设计:
 - Role 枚举映射 OpenAI API 角色
 - Message 数据类支持 system / user / assistant / tool
 - ToolCall 表示单次工具调用请求
-- 双向序列化：内部格式 ↔ OpenAI Chat Completions 格式
+- 双向序列化:内部格式 ↔ OpenAI Chat Completions 格式
 """
 from __future__ import annotations
 
@@ -67,10 +67,10 @@ class Message:
     """
     Agent 内部消息模型。
 
-    职责：
+    职责:
     - 统一表示所有角色消息
     - 提供 to_openai() / from_openai() 双向序列化
-    - 工厂方法：system() / user() / assistant() / tool_result() / summary_boundary()
+    - 工厂方法:system() / user() / assistant() / tool_result() / summary_boundary()
     """
     role: Role
     content: str = ""

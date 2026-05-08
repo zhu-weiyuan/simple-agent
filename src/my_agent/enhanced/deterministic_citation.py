@@ -1,7 +1,7 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 确定性引用机制
-基于论文：AgriIR: A Scalable Framework for Domain-Specific Knowledge Retrieval
+基于论文:AgriIR: A Scalable Framework for Domain-Specific Knowledge Retrieval
 arXiv: 2604.16353v1
 """
 from __future__ import annotations

@@ -2,13 +2,13 @@
 """
 my_agent — SimpleAgent v2.0
 
-融合最新 Agent 框架最佳实践：
+融合最新 Agent 框架最佳实践:
 - strands-agents: AgentBase Protocol, AgentResult, Agent-as-Tool
 - A2A Protocol: Agent Card, 任务状态, 互操作
 - LangGraph: 图状态管理
 - AgentScope Runtime: 生产级特性
 
-分层架构：
+分层架构:
 - types/    : 统一类型定义（Message, ToolDefinition, SessionConfig, AgentResult）
 - core/     : 核心引擎（QueryEngine, HookRegistry）
 - tools/    : 工具系统（ToolRegistry, BaseTool, builtins/, agent_tool, structured_output）
@@ -19,7 +19,7 @@ my_agent — SimpleAgent v2.0
 - a2a/      : A2A 协议（Agent-to-Agent 互操作）
 - multiagent/: 多 agent 编排（Supervisor, Chain, Parallel）
 
-入口：
+入口:
     from my_agent import SimpleAgent
     agent = SimpleAgent()
     result = agent.run("你好")

@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.types.tool — 工具类型定义
 
-参考 Claude Code Tool.ts 设计：
+参考 Claude Code Tool.ts 设计:
 - ToolDefinition: 工具元数据（名称、描述、参数 schema、处理器、标签）
 - ToolResult: 工具执行结果
 """

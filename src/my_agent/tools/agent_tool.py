@@ -2,7 +2,7 @@
 """
 my_agent.tools.agent_tool — Agent-as-Tool 适配器
 
-参考 strands-agents _AgentAsTool 设计：
+参考 strands-agents _AgentAsTool 设计:
 - 将 Agent 包装为工具，供其他 agent 调用
 - 支持上下文保持/重置
 - 支持并行执行
@@ -88,7 +88,7 @@ class AgentAsTool(BaseTool):
         """
         input_text = params.get("input", params.get("query", params.get("question", "")))
         if not input_text:
-            return "错误：请提供输入文本（input 参数）"
+            return "错误:请提供输入文本（input 参数）"
 
         # 重置状态（如果不保持上下文）
         if not self._preserve_context and self._initial_history:
@@ -100,7 +100,7 @@ class AgentAsTool(BaseTool):
             return str(result)
         except Exception as e:
             logger.error(f"Agent tool '{self.name}' call failed: {e}")
-            return f"Agent 调用失败：{type(e).__name__}: {e}"
+            return f"Agent 调用失败:{type(e).__name__}: {e}"
 
     def to_dict(self) -> Dict[str, Any]:
         """序列化为字典"""
@@ -128,7 +128,7 @@ def create_agent_tool(
     description: Optional[str] = None,
     preserve_context: bool = False,
 ) -> AgentAsTool:
-    """便捷函数：创建 Agent-as-Tool"""
+    """便捷函数:创建 Agent-as-Tool"""
     return AgentAsTool(
         agent=agent,
         name=name,

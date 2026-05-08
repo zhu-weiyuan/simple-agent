@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.graph.state — Graph State
 
-参考 LangGraph 的 State 设计：
+参考 LangGraph 的 State 设计:
 - 用 TypedDict 定义图的全局状态
 - 所有节点共享状态
 - 支持 reducer 合并策略（最后一个值 / 追加 / 替换）

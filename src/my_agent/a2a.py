@@ -2,14 +2,14 @@
 """
 my_agent.a2a — Agent-to-Agent (A2A) 协议实现
 
-参考 a2aproject/A2A (⭐23545) 协议设计：
+参考 a2aproject/A2A (⭐23545) 协议设计:
 - AgentCard: agent 元数据和能力声明
 - A2AClient: 远程 agent 客户端
 - A2AServer: 本地 agent 服务器
 - 任务状态管理
 - 消息格式标准化
 
-A2A 协议允许不同 agent 系统之间互操作，实现：
+A2A 协议允许不同 agent 系统之间互操作，实现:
 1. Agent 发现（通过 Agent Card）
 2. 任务委托（一个 agent 委托任务给另一个）
 3. 状态跟踪（任务进度、取消、取消）
@@ -158,9 +158,9 @@ class AgentCard:
 # ── A2A Client ──────────────────────────────────────────────
 
 class A2AClient:
-    """A2A 客户端：调用远程 agent
+    """A2A 客户端:调用远程 agent
 
-    参考 a2aproject/A2A 客户端设计，支持：
+    参考 a2aproject/A2A 客户端设计，支持:
     - 发送提示消息
     - 获取任务状态
     - 取消任务
@@ -259,9 +259,9 @@ class A2AClient:
 # ── A2A Server ──────────────────────────────────────────────
 
 class A2AServer:
-    """A2A 服务器：暴露本地 agent 为 A2A 端点
+    """A2A 服务器:暴露本地 agent 为 A2A 端点
 
-    提供标准 A2A 接口：
+    提供标准 A2A 接口:
     - GET /.well-known/agent.json → Agent Card
     - POST /messages → 发送消息
     - GET /tasks/{id} → 查询任务状态
@@ -313,7 +313,7 @@ class A2AServer:
             task.message = A2AMessage(
                 task_id=task_id,
                 type=MessageType.RESULT,
-                content=f"错误：{type(e).__name__}: {e}",
+                content=f"错误:{type(e).__name__}: {e}",
             )
 
         return task

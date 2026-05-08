@@ -2,7 +2,7 @@
 """
 test_v2_features.py — SimpleAgent v2.0 新功能测试
 
-测试内容：
+测试内容:
 1. AgentBase Protocol (invoke, stream, card)
 2. Agent-as-Tool (as_tool, add_tool)
 3. A2A Protocol (AgentCard, A2AMessage, TaskStatus)

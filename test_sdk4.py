@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """底层 httpx 直接发请求，模拟 SDK 的完整行为"""
 import httpx
 

@@ -1,7 +1,7 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 查询复杂度分类器 + 动态路由
-基于论文：Adaptive Query Routing: A Tier-Based Framework for Hybrid Retrieval
+基于论文:Adaptive Query Routing: A Tier-Based Framework for Hybrid Retrieval
 arXiv: 2604.14222v1
 """
 from __future__ import annotations

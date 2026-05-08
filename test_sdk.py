@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """直接测试 OpenAI SDK vs requests 请求的区别"""
 import os
 import json

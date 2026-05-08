@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.memory.retrieval — 记忆检索器
 
-基于 MemoryStore 提供更高阶的检索能力：
+基于 MemoryStore 提供更高阶的检索能力:
 - 关键词匹配
 - 上下文感知检索
 - 记忆摘要生成

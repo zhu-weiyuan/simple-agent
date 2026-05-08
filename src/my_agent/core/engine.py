@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.core.engine — QueryEngine 核心循环
 
-参考 Claude Code query.ts → QueryEngine 设计：
+参考 Claude Code query.ts → QueryEngine 设计:
 - run() 接受用户输入，返回最终回复
 - _loop() 是工具调用循环核心
 - 流式输出支持
@@ -36,7 +36,7 @@ class QueryEngine:
     """
     Agent 核心引擎。
 
-    职责：
+    职责:
     - 管理 SessionState（消息历史 + 压缩）
     - 驱动工具调用循环
     - 注入 LLM 调用函数
@@ -84,7 +84,7 @@ class QueryEngine:
     def run_stream(
         self, user_input: str, max_tool_calls: int = 10
     ) -> Generator[str, None, None]:
-        """流式版本：先跑完工具轮次，最后流式输出"""
+        """流式版本:先跑完工具轮次，最后流式输出"""
         self.hooks.fire(HookPoint.QUERY_START, data={"user_input": user_input})
         self.session.append(Message.user(user_input))
 
@@ -103,7 +103,7 @@ class QueryEngine:
         """
         工具调用循环。
 
-        每次迭代：
+        每次迭代:
         1. 调用 LLM（带 tools schema）
         2. 有 tool_calls → 执行 → 追加结果 → 继续
         3. 无 tool_calls → 返回最终回复
@@ -138,7 +138,7 @@ class QueryEngine:
                 self.session.append(assistant_msg)
                 for tc in assistant_msg.tool_calls:
                     result = self._execute_tool(tc)
-                    is_error = result.startswith("错误：") or result.startswith("MCP 调用失败")
+                    is_error = result.startswith("错误:") or result.startswith("MCP 调用失败")
                     tool_msg = Message.tool_result(tc.id, result, is_error=is_error)
                     self.session.append(tool_msg)
                 continue
@@ -153,7 +153,7 @@ class QueryEngine:
 
             return last_response
 
-        return "错误：工具调用次数过多，请检查是否陷入循环。"
+        return "错误:工具调用次数过多，请检查是否陷入循环。"
 
     # ── LLM ──────────────────────────────────────────────────
 
@@ -194,7 +194,7 @@ class QueryEngine:
 
         handler = self.tool_registry.get_handler(tc.name)
         if handler is None:
-            error_msg = f"错误：未知工具：{tc.name}"
+            error_msg = f"错误:未知工具:{tc.name}"
             self.hooks.fire(HookPoint.TOOL_ERROR, data={**hook_data, "error": error_msg})
             return error_msg
 
@@ -204,7 +204,7 @@ class QueryEngine:
             self.hooks.fire(HookPoint.TOOL_CALL_AFTER, data={**hook_data, "result": result})
             return result
         except Exception as e:
-            error_msg = f"工具执行失败 [{tc.name}]：{type(e).__name__}: {e}"
+            error_msg = f"工具执行失败 [{tc.name}]:{type(e).__name__}: {e}"
             self.hooks.fire(HookPoint.TOOL_ERROR, data={**hook_data, "error": error_msg})
             return error_msg
 

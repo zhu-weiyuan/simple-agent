@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.tools.builtins.calculator — 计算器工具
 """
@@ -37,10 +37,10 @@ class CalculatorTool(BaseTool):
     def execute(self, params: Dict[str, Any]) -> str:
         expr = str(params.get("expression", "")).strip()
         if not expr:
-            return "错误：未提供表达式"
+            return "错误:未提供表达式"
 
         if not all(c in self._ALLOWED_CHARS for c in expr):
-            return "错误：表达式包含非法字符"
+            return "错误:表达式包含非法字符"
 
         try:
             normalized = expr.replace("^", "**")
@@ -51,13 +51,13 @@ class CalculatorTool(BaseTool):
                 {"__builtins__": {}},
                 {},
             )
-            return f"计算结果：{expr} = {result}"
+            return f"计算结果:{expr} = {result}"
         except ZeroDivisionError:
-            return "错误：除数不能为零"
+            return "错误:除数不能为零"
         except Exception as e:
-            return f"计算错误：{type(e).__name__}: {e}"
+            return f"计算错误:{type(e).__name__}: {e}"
 
     def _validate_ast(self, node: ast.AST) -> None:
         for child in ast.walk(node):
             if not isinstance(child, self._ALLOWED_NODES):
-                raise ValueError(f"不支持的表达式节点：{type(child).__name__}")
+                raise ValueError(f"不支持的表达式节点:{type(child).__name__}")

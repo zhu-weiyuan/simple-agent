@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.tools.builtins.shell — PowerShell 执行工具
 """
@@ -15,7 +15,7 @@ class PowerShellTool(BaseTool):
 
     name = "execute_powershell"
     description = (
-        "执行 PowerShell 命令。可用于：查看系统信息、管理文件、"
+        "执行 PowerShell 命令。可用于:查看系统信息、管理文件、"
         "运行程序、检查网络、安装软件等。"
     )
     parameters = {
@@ -65,13 +65,13 @@ class PowerShellTool(BaseTool):
     def execute(self, params: Dict[str, Any]) -> str:
         command = str(params.get("command", "")).strip()
         if not command:
-            return "错误：未提供 PowerShell 命令"
+            return "错误:未提供 PowerShell 命令"
 
         cmd_lower = command.lower()
         for pattern, reason in self._BLOCK_PATTERNS.items():
             if pattern.lower() in cmd_lower:
                 return (
-                    f"错误：拒绝执行危险命令 '{pattern}'（{reason}）。"
+                    f"错误:拒绝执行危险命令 '{pattern}'（{reason}）。"
                     "如需此操作，请明确说明并获得确认。"
                 )
 
@@ -79,7 +79,7 @@ class PowerShellTool(BaseTool):
         if any(ch in command for ch in [';', '&', '`']) and any(
             p in cmd_lower for p in ['http', 'download', 'invoke', 'comobj']
         ):
-            return "错误：拒绝执行包含可疑模式的复合命令。"
+            return "错误:拒绝执行包含可疑模式的复合命令。"
 
         try:
             ps_cmd = (
@@ -122,6 +122,6 @@ class PowerShellTool(BaseTool):
             return text or "命令执行成功，无输出。"
 
         except subprocess.TimeoutExpired:
-            return "错误：命令执行超时（15秒限制）"
+            return "错误:命令执行超时（15秒限制）"
         except Exception as e:
-            return f"PowerShell 执行失败：{type(e).__name__}: {e}"
+            return f"PowerShell 执行失败:{type(e).__name__}: {e}"

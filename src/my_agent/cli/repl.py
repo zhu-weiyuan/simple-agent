@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.cli.repl — CLI 入口
 
-向后兼容：CLI 接口与原来完全一致。
+向后兼容:CLI 接口与原来完全一致。
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def main() -> int:
     user_input = " ".join(args).strip()
     if not user_input:
         print(
-            '错误：未提供任务描述。用法: my-agent "你的任务"',
+            '错误:未提供任务描述。用法: my-agent "你的任务"',
             file=sys.stderr,
         )
         return 1

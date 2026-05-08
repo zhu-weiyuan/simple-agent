@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 my_agent.types.session — Session 类型定义
 
-参考 Claude Code Session 设计：
+参考 Claude Code Session 设计:
 - SessionConfig: 行为配置（压缩阈值、持久化路径）
 - SessionState: 会话状态（消息列表、轮数、token 估算）
 """
@@ -30,7 +30,7 @@ class SessionState:
     """
     Agent session 状态容器。
 
-    职责：
+    职责:
     - 维护消息列表（首条必须是 system）
     - token 估算与压缩判断
     - 序列化 / 反序列化（会话恢复）
