@@ -2,7 +2,9 @@
 """LangGraph 风格图编排引擎 - 精简测试"""
 import sys
 import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+# Only wrap stdout when running directly (not under pytest)
+if not sys.modules.get('_pytest') and 'pytest' not in sys.argv:
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 from my_agent.graph.state import GraphState
 from my_agent.graph.node import node

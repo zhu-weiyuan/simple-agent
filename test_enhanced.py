@@ -6,9 +6,12 @@ SimpleAgent 增强模块测试脚本
 import sys
 import os
 import io
+import pytest
 
 # 设置标准输出编码为 UTF-8
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+# Only wrap stdout when running directly (not under pytest)
+if not sys.modules.get('_pytest') and 'pytest' not in sys.argv:
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
@@ -265,6 +268,7 @@ def test_multi_index_retrieval():
     return all_passed
 
 
+@pytest.mark.asyncio
 async def test_streaming_output():
     """测试流式输出"""
     print("\n" + "=" * 80)

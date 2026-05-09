@@ -4,8 +4,11 @@ import io
 import os
 import json
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+# Only wrap stdout when running directly (not under pytest)
+# Wrapping under pytest causes "I/O operation on closed file" during cleanup
+if not sys.modules.get("_pytest") and "pytest" not in sys.argv:
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
 from my_agent.graph.state import GraphState
 from my_agent.graph.node import BaseNode, node, Edge, ConditionalEdge

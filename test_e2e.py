@@ -4,8 +4,12 @@ import sys
 import io
 
 # Force UTF-8 output
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+# Only wrap stdout when running directly (not under pytest)
+if not sys.modules.get('_pytest') and 'pytest' not in sys.argv:
+    # Only wrap stdout when running directly (not under pytest)
+if not sys.modules.get('_pytest') and 'pytest' not in sys.argv:
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 from my_agent.agent import SimpleAgent
 

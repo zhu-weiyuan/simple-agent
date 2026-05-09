@@ -7,7 +7,9 @@ import sys
 import os
 import io
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+# Only wrap stdout when running directly (not under pytest)
+if not sys.modules.get('_pytest') and 'pytest' not in sys.argv:
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
