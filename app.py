@@ -12,9 +12,9 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List
 
-os.environ.setdefault("OPENAI_API_KEY", "tp-c5b…w3qm")
+os.environ.setdefault("OPENAI_API_KEY", "tp-cvxfjjly908vv1u2w2sq45iko6hb06ekyvw50jrbiu6r5ryx")
 os.environ.setdefault("OPENAI_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1")
-os.environ.setdefault("OPENAI_MODEL", "mimo-v2.5")
+os.environ.setdefault("OPENAI_MODEL", "mimo-v2.5-pro")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
