@@ -84,18 +84,21 @@ class QueryEngine:
     def run_stream(
         self, user_input: str, max_tool_calls: int = 10
     ) -> Generator[str, None, None]:
-        """流式版本:先跑完工具轮次，最后流式输出"""
+        """流式版本:先跑完工具轮次，最后逐字输出 SSE 格式"""
         self.hooks.fire(HookPoint.QUERY_START, data={"user_input": user_input})
         self.session.append(Message.user(user_input))
 
         self._loop(max_tool_calls, capture_last=True)
 
+        # Yield each character as SSE data: JSON\n\n
         if self._llm_stream_fn:
             yield from self._last_stream()
         else:
             last = self._last_assistant_content()
             if last:
-                yield last
+                for ch in last:
+                    yield f"data: {json.dumps({'token': ch})}\n\n"
+        yield "data: [DONE]\n\n"
 
     # ── tool loop ────────────────────────────────────────────
 
@@ -128,6 +131,7 @@ class QueryEngine:
 
             if capture_last and not assistant_msg.tool_calls:
                 last_response = assistant_msg.content or ""
+                self.session.append(assistant_msg)
                 break
 
             # content_filter: don't append, return immediately
