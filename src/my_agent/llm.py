@@ -31,7 +31,7 @@ class LLMClient:
         if env_path.exists():
             self._load_env(env_path)
 
-        self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or "https://token-plan-cn.xiaomimimo.com/v1"
+        self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or "https://api.xiaomimimo.com/v1"
         self.api_key = api_key or os.getenv("OPENAI_API_KEY") or ""
         self.model = model or os.getenv("OPENAI_MODEL") or "mimo-v2.5"
         self.temperature = temperature
@@ -84,7 +84,10 @@ class LLMClient:
         response.raise_for_status()
         data = response.json()
 
-        return data["choices"][0]["message"]["content"]
+        msg = data["choices"][0]["message"]
+        content = msg.get("content") or ""
+        reasoning = msg.get("reasoning_content") or ""
+        return (content + reasoning).strip() or reasoning.strip()
 
     def chat_stream(
         self,

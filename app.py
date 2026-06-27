@@ -12,9 +12,9 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List
 
-os.environ.setdefault("OPENAI_API_KEY", "tp-cvxfjjly908vv1u2w2sq45iko6hb06ekyvw50jrbiu6r5ryx")
-os.environ.setdefault("OPENAI_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1")
-os.environ.setdefault("OPENAI_MODEL", "mimo-v2.5-pro")
+os.environ.setdefault("OPENAI_API_KEY", "sk-cwpiwaell5tvdzmxftep0j2td08xdaqfopg1imipulechm4b")
+os.environ.setdefault("OPENAI_BASE_URL", "https://api.xiaomimimo.com/v1")
+os.environ.setdefault("OPENAI_MODEL", "mimo-v2.5")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
@@ -385,7 +385,7 @@ async def classify_intent(req: ChatRequest):
     return {
         "intent": top_intent,
         "confidence": round(confidence, 2),
-        "all_scores": {k: round(v / max(scores.values(), 1), 2) for k, v in scores.items()},
+        "all_scores": {k: round(v / max(list(scores.values()) or [1]), 2) for k, v in scores.items()},
         "suggestions": suggestions.get(top_intent, []),
     }
 

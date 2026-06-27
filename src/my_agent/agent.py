@@ -134,7 +134,7 @@ class _FakeMessage:
     def __init__(self, data: Dict[str, Any]) -> None:
         self.role = data.get("role", "assistant")
         self.content = data.get("content")
-        raw_tools = data.get("tool_calls", [])
+        raw_tools = data.get("tool_calls") or []
         self.tool_calls = [_FakeToolCall(t) for t in raw_tools]
 
 
