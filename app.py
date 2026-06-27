@@ -12,22 +12,27 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List
 
-os.environ.setdefault("OPENAI_API_KEY", "your_key_here")
-os.environ.setdefault("OPENAI_BASE_URL", "http://localhost:8080")
-os.environ.setdefault("OPENAI_MODEL", "Qwen3.6-27B-IQ4_NL.gguf")
+os.environ.setdefault("OPENAI_API_KEY", "tp-c5b…w3qm")
+os.environ.setdefault("OPENAI_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1")
+os.environ.setdefault("OPENAI_MODEL", "mimo-v2.5")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse, JSONResponse
 from pydantic import BaseModel
 import json
 
+# Override default JSON response to use UTF-8 encoding
+class UTF8JSONResponse(JSONResponse):
+    def render(self, content):
+        return super().render(content).decode("utf-8").encode("utf-8")
+
+app = FastAPI(title="SimpleAgent v2.0", json_response_class=UTF8JSONResponse)
+
 web_dir = Path(__file__).parent / "web"
 web_dir.mkdir(exist_ok=True)
-
-app = FastAPI(title="SimpleAgent v2.0")
 
 # ── Rate Limiter (sliding window) ───────────────────────────────
 class RateLimiter:
@@ -114,9 +119,21 @@ async def chat(req: ChatRequest):
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
         reply = agent.run(req.message)
-        return {"reply": reply}
+        # Force UTF-8 encoding with ensure_ascii=False
+        import json as j
+        body = j.dumps({"reply": reply}, ensure_ascii=False).encode("utf-8")
+        return Response(
+            content=body,
+            media_type="application/json; charset=utf-8",
+        )
     except Exception as e:
-        raise HTTPException(500, str(e))
+        import json as j
+        body = j.dumps({"error": str(e)}, ensure_ascii=False).encode("utf-8")
+        return Response(
+            content=body,
+            status_code=500,
+            media_type="application/json; charset=utf-8",
+        )
 
 
 @app.get("/api/health")

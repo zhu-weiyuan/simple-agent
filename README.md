@@ -14,12 +14,15 @@
   - 📚 **多索引混合检索** — Vector + Keyword + Graph 三模检索
   - 💬 **流式输出** — 实时增量响应
 - **图状态编排引擎**（Graph）：节点有向图，支持状态传递、条件分支、循环
-- **Web UI 增强**：意图分析面板（实时显示用户意图分类+置信度）、快捷操作按钮、消息时间戳、流式输出渲染
+- **Web UI**：暗色主题、意图分析面板、快捷操作、流式渲染、Markdown 支持
 - **Hook 系统**：pre/post 扩展点，支持自定义中间件
 - **Bridge 层**：权限控制 + 安全沙箱
 - **MCP 协议集成**：原生支持 Model Context Protocol
 - **请求延迟监控**：每个 API 响应自动附加 `X-Response-Time` 头部（毫秒级）
 - **Agent Card 健壮性**：优先使用 `agent.card()` 方法，回退到直接属性读取
+- **滑动窗口限流**：每个 API 端点自动限流，可配置请求数和窗口大小
+- **系统健康检查**：CPU/内存/磁盘使用率、LLM 连通性、请求统计
+- **A2A 协议**：Agent-to-Agent 互操作，支持 Agent Card 和任务状态
 
 ## 🏗️ 架构
 
@@ -69,7 +72,7 @@ python app.py         # Web 模式 (默认端口 8000)
 ```
 simple-agent/
 ├── src/my_agent/
-│   ├── types/           # 类型定义（Message, Session, Tool）
+│   ├── types/           # 类型定义（Message, Session, Tool, Agent）
 │   ├── core/            # 核心引擎 + Hook 系统
 │   ├── tools/           # 工具注册表 + 内置工具
 │   │   └── builtins/    # calculator, time, file, shell
@@ -81,8 +84,10 @@ simple-agent/
 │   ├── agent.py         # Agent 主类
 │   ├── routing.py       # 路由逻辑
 │   └── mcp_client.py    # MCP 客户端
-├── static/              # Web UI
-├── tests/               # 测试文件
+├── web/                 # Web UI (暗色主题)
+├── examples/            # 示例应用
+│   └── code_review/     # AI 代码审查助手
+├── app.py               # Web 服务器 (FastAPI)
 ├── pyproject.toml
 └── README.md
 ```
@@ -102,7 +107,6 @@ simple-agent/
 | `/api/conversations/{id}` | DELETE | 删除指定会话 |
 | `/api/analytics` | GET | 对话分析统计（会话数、消息量、平均长度）|
 | `/api/intent` | POST | `{"message": "..."}` → 意图分类 + 置信度 + 建议回复 |
-| `/api/chat` (stream) | POST | `{"message": "...", "stream": true}` → SSE/流式文本输出（前端自动适配）|
 
 ## 🧪 测试
 

@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-my_agent.llm — LLM 客户端层
+my_agent.llm — LLM 客户端层 (mimo-v2.5 compatible)
 
-用 requests 直接调用 OpenAI 兼容 API，绕过 OpenAI SDK 的 httpx 404 问题。
-llama.cpp 对 httpx 的请求返回 404，但对 requests 正常。
+Handles reasoning_content → content merge for models that separate thinking from output.
 """
 from __future__ import annotations
 
@@ -54,7 +53,18 @@ class LLMClient:
 
         resp = requests.post(url, json=payload, headers=headers, timeout=120)
         resp.raise_for_status()
-        return resp.json()
+        data = resp.json()
+
+        # Handle mimo-v2.5 reasoning_content → content merge
+        if "choices" in data and len(data["choices"]) > 0:
+            msg = data["choices"][0].get("message", {})
+            content = msg.get("content", "")
+            reasoning = msg.get("reasoning_content", "")
+            # If content is empty but reasoning exists, use reasoning as content
+            if not content.strip() and reasoning:
+                data["choices"][0]["message"]["content"] = reasoning
+        
+        return data
 
     def chat_stream(
         self,
@@ -93,7 +103,11 @@ class LLMClient:
                 chunk = json.loads(data_str)
                 delta = chunk.get("choices", [{}])[0].get("delta", {})
                 content = delta.get("content", "")
-                if content:
+                # Also capture reasoning_content in streaming
+                reasoning = delta.get("reasoning_content", "")
+                if reasoning:
+                    yield reasoning
+                elif content:
                     yield content
             except json.JSONDecodeError:
                 continue
