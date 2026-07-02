@@ -12,13 +12,19 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List
 
-os.environ.setdefault("OPENAI_API_KEY", "sk-cwpiwaell5tvdzmxftep0j2td08xdaqfopg1imipulechm4b")
-os.environ.setdefault("OPENAI_BASE_URL", "https://api.xiaomimimo.com/v1")
-os.environ.setdefault("OPENAI_MODEL", "mimo-v2.5")
+os.environ.setdefault("OPENAI_API_KEY", "sk-ckmnbfew0gajnwb508q42tvbvyvcswtf9k2c6wfqwi991ksj")
+
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from my_agent.logging_config import setup_logging, logger
+from my_agent.metrics import metrics
+from my_agent.auth import auth_required
+from my_agent.logging_config import setup_logging, logger
+from my_agent.metrics import metrics
+from my_agent.auth import auth_required
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse, JSONResponse
 from pydantic import BaseModel
@@ -99,7 +105,17 @@ async def rate_limit_middleware(request: Request, call_next):
         raise
 
 from my_agent import SimpleAgent
+from my_agent.security import redact as pii_redact, scan_and_log as pii_scan
+from my_agent.security import scan_input as prompt_scan
+from my_agent.sentiment import analyze as sentiment_analyze
+from my_agent.summary import summarize as conversation_summary
+from my_agent.observability import get_metrics as get_obs_metrics, get_alerts
+
 agent = SimpleAgent()
+obs_metrics = get_obs_metrics()
+alert_service = get_alerts()
+# Alert rule: trigger when average latency exceeds 5s
+alert_service.add_rule("high_latency", "request_latency", threshold=5000)
 
 
 class ChatRequest(BaseModel):
@@ -108,17 +124,44 @@ class ChatRequest(BaseModel):
 
 
 @app.post("/api/chat")
+@auth_required
 async def chat(req: ChatRequest):
     if not req.message.strip():
         raise HTTPException(400, "Empty message")
+
+    # ── Security scan ──────────────────────────────────────
+    pii_result = pii_redact(req.message)
+    prompt_result = prompt_scan(req.message)
+
+    # Use cleaned/redacted text for processing
+    safe_message = pii_result.redacted_text
+    if not prompt_result.is_safe:
+        safe_message = prompt_result.cleaned
+
+    # Log security findings
+    if pii_result.found_pii:
+        pii_scan(req.message)  # logs warning
+    if not prompt_result.is_safe:
+        logger.warning(f"Prompt injection detected: {prompt_result.threats}")
+
     try:
+        start_time = time.time()
         if req.stream:
             return StreamingResponse(
-                agent.run_stream(req.message),
+                agent.run_stream(safe_message),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
             )
-        reply = agent.run(req.message)
+        reply = agent.run(safe_message)
+        elapsed_ms = (time.time() - start_time) * 1000
+
+        # Record observability metrics
+        obs_metrics.increment_counter("chat_requests")
+        obs_metrics.observe_histogram("request_latency", elapsed_ms)
+
+        # Check alerts
+        alert_service.check_and_alert()
+
         # Force UTF-8 encoding with ensure_ascii=False
         import json as j
         body = j.dumps({"reply": reply}, ensure_ascii=False).encode("utf-8")
@@ -127,6 +170,7 @@ async def chat(req: ChatRequest):
             media_type="application/json; charset=utf-8",
         )
     except Exception as e:
+        obs_metrics.increment_counter("chat_errors")
         import json as j
         body = j.dumps({"error": str(e)}, ensure_ascii=False).encode("utf-8")
         return Response(
@@ -200,8 +244,8 @@ async def list_tools():
 
 
 @app.get("/api/metrics")
-async def metrics():
-    """Prometheus-style text metrics endpoint."""
+async def metrics_endpoint():
+    """Prometheus-style text metrics endpoint (combined legacy + observability)."""
     mem = psutil.virtual_memory()
     lines = [
         f"# HELP agent_uptime_seconds Agent uptime in seconds",
@@ -214,10 +258,16 @@ async def metrics():
         f"# HELP system_memory_usage_percent System memory usage percentage",
         f"# TYPE system_memory_usage_percent gauge",
         f"system_memory_usage_percent {mem.percent}",
-        f"# HELP agent_rate_limit_remaining Remaining rate limit requests",
-        f"# TYPE agent_rate_limit_remaining gauge",
     ]
+    # Add observability metrics
+    lines.append(obs_metrics.get_prometheus_text())
     return "\n".join(lines) + "\n"
+
+
+@app.get("/api/observability")
+async def observability_dashboard():
+    """Structured JSON observability data (not Prometheus format)."""
+    return obs_metrics.get_metrics()
 
 @app.get("/api/memory/stats")
 async def memory_stats():
@@ -388,6 +438,93 @@ async def classify_intent(req: ChatRequest):
         "all_scores": {k: round(v / max(list(scores.values()) or [1]), 2) for k, v in scores.items()},
         "suggestions": suggestions.get(top_intent, []),
     }
+
+
+class SecurityRequest(BaseModel):
+    text: str
+
+
+class SummaryRequest(BaseModel):
+    messages: List[Dict[str, str]]
+
+
+class SentimentRequest(BaseModel):
+    text: str
+    session_id: str = "anonymous"
+
+
+@app.post("/api/security/scan")
+async def security_scan(req: SecurityRequest):
+    """Scan user input for PII and prompt injection.
+
+    Returns redacted text, PII findings, and injection threats.
+    """
+    if not req.text.strip():
+        raise HTTPException(400, "Empty text")
+
+    # PII detection
+    pii_result = pii_redact(req.text)
+    has_pii = len(pii_result.found_pii) > 0
+
+    # Prompt injection detection
+    scan_result = prompt_scan(req.text)
+
+    return {
+        "is_safe": not has_pii and scan_result.is_safe,
+        "pii": {
+            "detected": has_pii,
+            "count": len(pii_result.found_pii),
+            "types": list(set(f.pii_type for f in pii_result.found_pii)),
+            "redacted_text": pii_result.redacted_text,
+        },
+        "injection": {
+            "detected": not scan_result.is_safe,
+            "threats": scan_result.threats,
+            "cleaned_text": scan_result.cleaned,
+        },
+    }
+
+
+@app.post("/api/sentiment")
+async def sentiment(req: SentimentRequest):
+    """Analyze user message sentiment.
+
+    Returns emotion type, intensity (1-5), trend, and escalation flag.
+    """
+    if not req.text.strip():
+        raise HTTPException(400, "Empty text")
+
+    result = sentiment_analyze(req.text, session_id=req.session_id)
+
+    # Add tone adjustment suggestion
+    from my_agent.sentiment import get_tone_adjustment
+    tone = get_tone_adjustment(
+        result.get("emotion", "neutral"),
+        result.get("intensity", 1),
+        result.get("trend", "unknown"),
+    )
+    result["tone_adjustment"] = tone
+
+    return result
+
+
+@app.post("/api/summary")
+async def summary(req: SummaryRequest):
+    """Generate a service ticket summary from conversation history.
+
+    Returns structured ticket with subject, category, description,
+    resolution, priority, and status.
+    """
+    if not req.messages:
+        raise HTTPException(400, "Empty messages")
+
+    # Try to get LLM client from agent
+    llm_client = None
+    if hasattr(agent, 'llm'):
+        llm_client = agent.llm
+
+    result = conversation_summary(req.messages, llm_client=llm_client)
+    return result
 
 
 @app.get("/api/card")

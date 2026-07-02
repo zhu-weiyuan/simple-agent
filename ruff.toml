@@ -1,0 +1,29 @@
+# Ruff configuration for simple-agent
+
+target-version = "py311"
+
+[lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B905",   # zip() without strict argument
+    "SIM102", # Use a single if instead of nested ifs
+]
+
+[lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"**/test_*.py" = ["E501"]  # Tests can have longer lines for readability
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

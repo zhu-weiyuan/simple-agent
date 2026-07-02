@@ -658,6 +658,76 @@
     color: var(--text-dim);
   }
 
+  /* ── Typing Animation ───────────────────── */
+  .typing-cursor::after {
+    content: '▋';
+    animation: blink-cursor 0.8s infinite;
+    color: var(--accent);
+    margin-left: 2px;
+  }
+  @keyframes blink-cursor {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  /* ── Emotion Bar ────────────────────────── */
+  .emotion-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-dim);
+    transition: all 0.3s ease;
+  }
+  .emotion-bar.hidden { display: none; }
+  #emotionIcon { font-size: 16px; }
+  #emotionLabel { font-weight: 500; text-transform: capitalize; }
+  .emotion-intensity {
+    flex: 1; max-width: 80px;
+    height: 4px; background: var(--border);
+    border-radius: 2px; overflow: hidden;
+  }
+  .emotion-fill {
+    height: 100%; border-radius: 2px;
+    background: var(--green); transition: width 0.3s, background 0.3s;
+  }
+
+  /* ── Voice Button ───────────────────────── */
+  .voice-btn {
+    background: none; border: none;
+    font-size: 18px; cursor: pointer;
+    padding: 4px 8px; border-radius: 8px;
+    transition: all var(--transition);
+    flex-shrink: 0;
+  }
+  .voice-btn:hover { background: var(--accent-glow); }
+  .voice-btn.recording {
+    animation: pulse-red 1s infinite;
+  }
+  @keyframes pulse-red {
+    0%, 100% { color: var(--red); transform: scale(1); }
+    50% { color: var(--red); transform: scale(1.2); }
+  }
+
+  /* ── Language Toggle ────────────────────── */
+  .lang-toggle {
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: var(--surface-2);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: all var(--transition);
+  }
+  .lang-toggle:hover {
+    border-color: var(--accent);
+    color: var(--accent-light);
+  }
+
   /* ── Responsive ─────────────────────────── */
   @media (max-width: 768px) {
     .msg-row { max-width: 90%; }
@@ -688,8 +758,10 @@
     </div>
     <button class="header-btn" onclick="analyzeIntent(input.value)" title="分析意图">🔍 意图</button>
     <button class="header-btn" onclick="fetchHealth()" title="系统状态">💓 状态</button>
+    <button class="header-btn" onclick="exportSession()" title="导出会话">📥</button>
     <button class="header-btn" onclick="clearChat()" title="清空对话">🗑️</button>
     <button class="header-btn theme-toggle" onclick="toggleTheme()" title="切换主题">☀️</button>
+    <button class="header-btn lang-toggle" onclick="toggleLang()" id="langBtn" title="Switch Language">EN</button>
   </div>
 </header>
 
@@ -709,6 +781,13 @@
   </div>
 </div>
 
+<!-- Emotion Indicator -->
+<div class="emotion-bar hidden" id="emotionBar">
+  <span id="emotionIcon">😐</span>
+  <span id="emotionLabel">neutral</span>
+  <div class="emotion-intensity"><div class="emotion-fill" id="emotionFill"></div></div>
+</div>
+
 <div class="intent-panel hidden" id="intentPanel">
   <h3>🔍 意图分析 <button onclick="toggleIntentPanel()">✕</button></h3>
   <div id="intentContent">等待输入...</div>
@@ -725,6 +804,7 @@
 
 <div id="input-area">
   <div class="input-wrapper">
+    <button class="voice-btn" id="voiceBtn" onclick="toggleVoiceInput()" title="语音输入">🎤</button>
     <input id="user-input" type="text" placeholder="输入消息，按 Enter 发送..." autofocus maxlength="4000">
     <span class="char-count" id="char-count">0/4000</span>
   </div>
@@ -775,6 +855,11 @@ function toggleTheme() {
     document.documentElement.setAttribute('data-theme', 'light');
     document.querySelector('.theme-toggle').textContent = '🌙';
   }
+})();
+
+// Restore language
+(function() {
+  applyLang(currentLang);
 })();
 
 // ── Intent Panel ───────────────────────────────
@@ -993,8 +1078,9 @@ async function sendMessage(forceText) {
   spinner.classList.add('active');
   addTyping();
 
-  // Auto-analyze intent
+  // Auto-analyze intent + emotion
   analyzeIntent(text).catch(() => {});
+  analyzeEmotion(text).catch(() => {});
 
   try {
     const controller = new AbortController();
@@ -1065,19 +1151,28 @@ async function sendMessage(forceText) {
       timeDiv.textContent = getTimeStr();
       row.appendChild(timeDiv);
 
-      // Add copy action
+      // Add copy + speak actions
       const actions = document.createElement('div');
       actions.className = 'msg-actions';
       const copyBtn = document.createElement('button');
       copyBtn.className = 'msg-action-btn';
-      copyBtn.textContent = '📋 复制';
+      copyBtn.textContent = i18n[currentLang].copy;
       copyBtn.onclick = () => {
         navigator.clipboard.writeText(fullText).then(() => {
-          copyBtn.textContent = '✅ 已复制';
-          setTimeout(() => copyBtn.textContent = '📋 复制', 1500);
+          copyBtn.textContent = i18n[currentLang].copied;
+          setTimeout(() => copyBtn.textContent = i18n[currentLang].copy, 1500);
         });
       };
       actions.appendChild(copyBtn);
+
+      // TTS button
+      const speakBtn = document.createElement('button');
+      speakBtn.className = 'msg-action-btn';
+      speakBtn.textContent = '🔊';
+      speakBtn.title = currentLang === 'cn' ? '朗读' : 'Read aloud';
+      speakBtn.onclick = () => speakText(fullText);
+      actions.appendChild(speakBtn);
+
       row.appendChild(actions);
     }
 
@@ -1095,6 +1190,204 @@ async function sendMessage(forceText) {
   sendBtn.disabled = false;
   spinner.classList.remove('active');
   input.focus();
+}
+
+// ── i18n (CN/EN) ────────────────────────────────
+let currentLang = localStorage.getItem('lang') || 'cn';
+
+const i18n = {
+  cn: {
+    placeholder: '输入消息，按 Enter 发送...',
+    send: '发送',
+    welcome: '你好，我是 SimpleAgent',
+    welcomeDesc: '一个从零构建的 AI Agent 框架，集成了工具调用、记忆系统、幻觉检测和多索引检索。',
+    features: ['🔧 工具调用', '🧠 长期记忆', '🛡️ 幻觉检测', '📚 引用溯源', '🔀 智能路由', '💬 流式输出'],
+    quickLabel: '快捷:',
+    quickBtns: ['👋 自我介绍', '🧮 计算', '🕐 时间', '📁 文件', '💻 代码'],
+    quickMsgs: ['你好，请介绍一下你自己', '帮我计算 256 * 347 + 1024', '现在几点了？', '列出当前目录的文件', '用 Python 写一个快速排序'],
+    copy: '📋 复制', copied: '✅ 已复制',
+    connected: '已连接', offline: '离线',
+    voiceHint: '点击麦克风语音输入',
+    exportTitle: '会话导出',
+  },
+  en: {
+    placeholder: 'Type a message, press Enter to send...',
+    send: 'Send',
+    welcome: 'Hello, I am SimpleAgent',
+    welcomeDesc: 'An AI Agent framework built from scratch with tool calling, memory system, hallucination detection and multi-index retrieval.',
+    features: ['🔧 Tool Calling', '🧠 Long-term Memory', '🛡️ Hallucination Detection', '📚 Citation Tracking', '🔀 Smart Routing', '💬 Streaming'],
+    quickLabel: 'Quick:',
+    quickBtns: ['👋 Intro', '🧮 Calc', '🕐 Time', '📁 Files', '💻 Code'],
+    quickMsgs: ['Hello, please introduce yourself', 'Calculate 256 * 347 + 1024', 'What time is it?', 'List files in current directory', 'Write a quicksort in Python'],
+    copy: '📋 Copy', copied: '✅ Copied',
+    connected: 'Connected', offline: 'Offline',
+    voiceHint: 'Click mic for voice input',
+    exportTitle: 'Export Session',
+  }
+};
+
+function applyLang(lang) {
+  currentLang = lang;
+  localStorage.setItem('lang', lang);
+  const t = i18n[lang];
+  document.getElementById('user-input').placeholder = t.placeholder;
+  document.getElementById('send-btn').querySelector('span:last-child')?.replaceWith(document.createTextNode(t.send));
+  document.getElementById('langBtn').textContent = lang === 'cn' ? 'EN' : '中文';
+
+  // Update welcome
+  const welcomeH2 = document.querySelector('#welcome h2');
+  if (welcomeH2) welcomeH2.textContent = t.welcome;
+  const welcomeP = document.querySelector('#welcome p');
+  if (welcomeP) welcomeP.textContent = t.welcomeDesc;
+
+  // Update features
+  const features = document.querySelectorAll('.welcome-feature');
+  features.forEach((el, i) => { if (t.features[i]) el.textContent = t.features[i]; });
+
+  // Update quick actions
+  const quickLabel = document.querySelector('.quick-actions-label');
+  if (quickLabel) quickLabel.textContent = t.quickLabel;
+  const quickBtns = document.querySelectorAll('.quick-action-btn');
+  quickBtns.forEach((btn, i) => {
+    if (t.quickBtns[i]) btn.textContent = t.quickBtns[i];
+    if (t.quickMsgs[i]) btn.onclick = () => sendQuick(t.quickMsgs[i]);
+  });
+
+  // Update voice button title
+  const voiceBtn = document.getElementById('voiceBtn');
+  if (voiceBtn) voiceBtn.title = t.voiceHint;
+}
+
+function toggleLang() {
+  applyLang(currentLang === 'cn' ? 'en' : 'cn');
+}
+
+// ── Voice Input (Web Speech API) ────────────────
+let recognition = null;
+let isRecording = false;
+
+function initSpeechRecognition() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) return null;
+  const rec = new SpeechRecognition();
+  rec.continuous = false;
+  rec.interimResults = true;
+  rec.lang = currentLang === 'cn' ? 'zh-CN' : 'en-US';
+  return rec;
+}
+
+function toggleVoiceInput() {
+  const btn = document.getElementById('voiceBtn');
+  if (isRecording) {
+    stopVoiceInput();
+    return;
+  }
+  recognition = initSpeechRecognition();
+  if (!recognition) {
+    addMsg('system', currentLang === 'cn' ? '⚠️ 您的浏览器不支持语音识别' : '⚠️ Speech recognition not supported');
+    return;
+  }
+  isRecording = true;
+  btn.classList.add('recording');
+  recognition.onresult = (event) => {
+    let transcript = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      transcript += event.results[i][0].transcript;
+    }
+    input.value = transcript;
+    document.getElementById('char-count').textContent = transcript.length + '/4000';
+  };
+  recognition.onend = () => {
+    isRecording = false;
+    btn.classList.remove('recording');
+    if (input.value.trim()) sendMessage();
+  };
+  recognition.onerror = (e) => {
+    isRecording = false;
+    btn.classList.remove('recording');
+    addMsg('system', currentLang === 'cn' ? `⚠️ 语音识别错误: ${e.error}` : `⚠️ Speech error: ${e.error}`);
+  };
+  recognition.start();
+}
+
+function stopVoiceInput() {
+  if (recognition) recognition.stop();
+  isRecording = false;
+  document.getElementById('voiceBtn').classList.remove('recording');
+}
+
+// ── Text-to-Speech ──────────────────────────────
+function speakText(text) {
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(text.replace(/[*#\[\]_`~]/g, '').substring(0, 500));
+  utter.lang = currentLang === 'cn' ? 'zh-CN' : 'en-US';
+  utter.rate = 1.0;
+  window.speechSynthesis.speak(utter);
+}
+
+// ── Emotion Analysis ────────────────────────────
+async function analyzeEmotion(text) {
+  try {
+    const resp = await fetch('/api/sentiment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, session_id: 'web-session' }),
+    });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const bar = document.getElementById('emotionBar');
+    const icon = document.getElementById('emotionIcon');
+    const label = document.getElementById('emotionLabel');
+    const fill = document.getElementById('emotionFill');
+
+    const emojis = { neutral: '😐', angry: '😠', sad: '😢', anxious: '😰', happy: '😊' };
+    const colors = { neutral: '#94a3b8', angry: '#f87171', sad: '#60a5fa', anxious: '#fbbf24', happy: '#34d399' };
+
+    icon.textContent = emojis[data.emotion] || '😐';
+    label.textContent = data.emotion;
+    fill.style.width = (data.intensity / 5 * 100) + '%';
+    fill.style.background = colors[data.emotion] || '#94a3b8';
+
+    bar.classList.remove('hidden');
+    setTimeout(() => bar.classList.add('hidden'), 5000);
+  } catch(e) { /* silent fail */ }
+}
+
+// ── Session Export ───────────────────────────────
+function exportSession() {
+  const messages = [];
+  document.querySelectorAll('.msg-row').forEach(row => {
+    const isUser = row.classList.contains('user');
+    const isAssistant = row.classList.contains('assistant');
+    const div = row.querySelector('.msg');
+    if (!div) return;
+    const text = div.textContent || div.innerText || '';
+    if (text.trim()) {
+      messages.push({
+        role: isUser ? 'user' : (isAssistant ? 'assistant' : 'system'),
+        content: text.trim(),
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
+
+  const data = {
+    agent: 'SimpleAgent v2.0',
+    exported_at: new Date().toISOString(),
+    language: currentLang,
+    messages: messages,
+  };
+
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `simple-agent-session-${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+
+  addMsg('system', currentLang === 'cn' ? '📥 会话已导出为 JSON 文件' : '📥 Session exported as JSON');
 }
 
 // ── Init ────────────────────────────────────────
