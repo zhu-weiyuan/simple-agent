@@ -334,6 +334,62 @@ async def delete_conversation(session_id: str):
         raise HTTPException(500, str(e))
 
 
+# ── SQLite-backed Conversation Endpoints ───────────────────────
+
+@app.get("/api/sqlite/sessions")
+async def sqlite_list_sessions(limit: int = 20):
+    """List sessions from SQLite store."""
+    try:
+        from my_agent.memory.sqlite_store import SqliteConversationStore
+        store = SqliteConversationStore("conversations.db")
+        sessions = store.list_sessions(limit=limit)
+        store.close()
+        return {"sessions": sessions, "count": len(sessions)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/sqlite/session/{session_id}")
+async def sqlite_get_session(session_id: str):
+    """Get a complete session from SQLite store."""
+    try:
+        from my_agent.memory.sqlite_store import SqliteConversationStore
+        store = SqliteConversationStore("conversations.db")
+        exported = store.export_session(session_id)
+        store.close()
+        return exported
+    except ValueError:
+        raise HTTPException(404, f"Session {session_id} not found")
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/sqlite/search")
+async def sqlite_search_messages(query: str, limit: int = 20):
+    """Search messages in SQLite store."""
+    try:
+        from my_agent.memory.sqlite_store import SqliteConversationStore
+        store = SqliteConversationStore("conversations.db")
+        results = store.search_messages(query, limit=limit)
+        store.close()
+        return {"results": results, "count": len(results)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/sqlite/stats")
+async def sqlite_stats():
+    """Get SQLite store statistics."""
+    try:
+        from my_agent.memory.sqlite_store import SqliteConversationStore
+        store = SqliteConversationStore("conversations.db")
+        stats = store.get_stats()
+        store.close()
+        return stats
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 @app.get("/api/analytics")
 async def analytics(limit: int = 50):
     """Conversation analytics endpoint.
