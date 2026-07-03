@@ -71,3 +71,20 @@
 - test_sentiment.py (20) â€” Emotion + Tracker + Tone
 - test_summary.py (16) â€” Categories + Priority + Status
 - test_observability.py (12) â€” Metrics + Alerts
+
+---
+
+## Phase 5: ¼¯³É²âÊÔ + BugĞŞ¸´ (2026-07-03)
+
+### ĞÂÔö¼¯³É²âÊÔ (test_integration.py)
+- **12¸öAPI¶Ëµã²âÊÔ**: ½¡¿µ¼ì²é/ÈÏÖ¤/°²È«É¨Ãè/Çé¸Ğ·ÖÎö/ÕªÒª/¹¤¾ßÁĞ±í
+- ÑéÖ¤ÏìÓ¦Í·¡¢Content-Type¡¢Prometheus¸ñÊ½
+- ¸²¸Ç auth_required ×°ÊÎÆ÷ĞĞÎª
+
+### BugĞŞ¸´
+- **app.py**: chat¶ËµãÌí¼Ó equest: Request ²ÎÊı£¨auth×°ÊÎÆ÷ĞèÒª£©
+- **auth.py**: uth_required ×°ÊÎÆ÷Ö§³Ö kwargs ×¢Èë£¨FastAPI TestClient¼æÈİ£©
+- **registry.py**: ToolRegistry Ìí¼Ó 	ools ¹«¹²ÊôĞÔ£¨Ìæ´úË½ÓĞ _tools£©
+
+### ²âÊÔ×´Ì¬
+- **×Ü¼Æ**: 78 tests pass (security/sentiment/summary/observability/integration)
