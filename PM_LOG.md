@@ -88,3 +88,23 @@
 
 ### 测试状态
 - **总计**: 78 tests pass (security/sentiment/summary/observability/integration)
+
+---
+
+## Phase 6: SQLite持久化 + API端点 (2026-07-03)
+
+### SQLite对话存储模块
+- src/my_agent/memory/sqlite_store.py: 完整SQLite对话存储
+  - sessions/messages/user_profiles表
+  - 全文搜索/分页/导出/统计
+  - :memory:模式(测试友好) + WAL模式(生产)
+  
+### API端点
+- GET /api/sqlite/sessions: 会话列表
+- GET /api/sqlite/session/{id}: 完整会话
+- GET /api/sqlite/search?query=xxx: 全文搜索
+- GET /api/sqlite/stats: 统计信息
+
+### 测试
+- test_sqlite_store.py: 10个单元测试
+- **总计: 88 tests pass**

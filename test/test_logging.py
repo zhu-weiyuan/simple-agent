@@ -1,7 +1,9 @@
 """Tests for structured logging configuration."""
 
 import sys
-sys.path.insert(0, r"C:\Users\Administrator\.openclaw\workspace\simple-agent\src")
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from my_agent.logging_config import setup_logging, JsonFormatter
 

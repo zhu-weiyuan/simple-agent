@@ -1,7 +1,9 @@
 """Tests for Prometheus metrics collector."""
 
 import sys
-sys.path.insert(0, r"C:\Users\Administrator\.openclaw\workspace\simple-agent\src")
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from my_agent.metrics import MetricsCollector
 

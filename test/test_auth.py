@@ -2,10 +2,11 @@
 
 import os
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from fastapi import HTTPException
 
-sys.path.insert(0, r"C:\Users\Administrator\.openclaw\workspace\simple-agent\src")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from my_agent.auth import AuthMiddleware, auth_required
 
