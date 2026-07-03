@@ -125,7 +125,7 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/chat")
 @auth_required
-async def chat(req: ChatRequest):
+async def chat(request: Request, req: ChatRequest):
     if not req.message.strip():
         raise HTTPException(400, "Empty message")
 

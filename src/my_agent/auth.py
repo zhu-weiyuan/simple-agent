@@ -76,12 +76,18 @@ def auth_required(func):
     
     @wraps(func)
     async def wrapper(*args, **kwargs):
-        # Find the Request object in arguments
+        # Find the Request object in arguments (positional or keyword)
         request = None
         for arg in args:
             if isinstance(arg, Request):
                 request = arg
                 break
+        if not request:
+            # Check kwargs — FastAPI often injects Request as kwarg
+            for key, val in kwargs.items():
+                if isinstance(val, Request):
+                    request = val
+                    break
         
         if not request:
             raise HTTPException(status_code=401, detail="Request not found")

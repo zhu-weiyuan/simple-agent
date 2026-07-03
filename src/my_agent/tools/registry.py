@@ -107,6 +107,11 @@ class ToolRegistry:
     def get_definition(self, name: str) -> Optional[ToolDefinition]:
         return self._tools.get(name)
 
+    @property
+    def tools(self) -> Dict[str, ToolDefinition]:
+        """Public access to the internal tools dict."""
+        return self._tools
+
     def __len__(self) -> int:
         return len(self._tools)
 
