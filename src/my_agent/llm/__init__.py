@@ -169,10 +169,7 @@ class LLMClient:
                 chunk = json.loads(data_str)
                 delta = chunk.get("choices", [{}])[0].get("delta", {})
                 content = delta.get("content", "")
-                reasoning = delta.get("reasoning_content", "")
-                if reasoning:
-                    yield reasoning
-                elif content:
+                if content:
                     yield content
             except json.JSONDecodeError:
                 continue
