@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SimpleAgent · 可观测面板</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3;
+    --muted:#8b949e; --accent:#3b82f6; --green:#3fb950; --red:#f85149;
+    --amber:#d29922; --chart:#58a6ff;
+  }
+  [data-theme="light"]{
+    --bg:#f6f8fa; --panel:#ffffff; --border:#d0d7de; --text:#1f2328;
+    --muted:#656d76; --accent:#0969da; --chart:#0969da;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--text);font-size:14px}
+  header{display:flex;align-items:center;gap:12px;padding:16px 24px;
+    border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg);z-index:10}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);display:inline-block}
+  .dot.ok{background:var(--green);box-shadow:0 0 6px var(--green)}
+  .dot.bad{background:var(--red)}
+  .spacer{flex:1}
+  .muted{color:var(--muted)}
+  button{background:var(--panel);color:var(--text);border:1px solid var(--border);
+    border-radius:6px;padding:6px 12px;cursor:pointer;font-size:13px}
+  button:hover{border-color:var(--accent)}
+  main{padding:24px;max-width:1200px;margin:0 auto}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:24px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px}
+  .card h3{margin:0 0 4px;font-size:12px;font-weight:500;color:var(--muted);
+    text-transform:uppercase;letter-spacing:.04em}
+  .card .val{font-size:28px;font-weight:700;line-height:1.2}
+  .card .sub{font-size:12px;color:var(--muted);margin-top:4px}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:10px;
+    padding:18px;margin-bottom:20px}
+  .panel h2{margin:0 0 14px;font-size:14px;font-weight:600}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border)}
+  th{color:var(--muted);font-weight:500}
+  td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .bar{height:8px;background:var(--chart);border-radius:4px;min-width:2px}
+  .barbg{background:var(--border);border-radius:4px;overflow:hidden;height:8px}
+  svg{display:block;width:100%;height:120px}
+  .spark path{fill:none;stroke:var(--chart);stroke-width:2}
+  .spark .area{fill:var(--chart);opacity:.12;stroke:none}
+  .tag{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;
+    background:var(--border);color:var(--text)}
+  .err{color:var(--red)}
+</style>
+</head>
+<body>
+<header>
+  <span class="dot" id="healthDot"></span>
+  <h1>SimpleAgent 可观测面板</h1>
+  <span class="muted" id="statusText">连接中…</span>
+  <span class="spacer"></span>
+  <span class="muted" id="lastUpdate"></span>
+  <button id="themeBtn">🌙</button>
+  <button id="pauseBtn">⏸ 暂停</button>
+</header>
+<main>
+  <div class="grid" id="kpis"></div>
+
+  <div class="panel">
+    <h2>CPU / 内存(最近 60 次采样)</h2>
+    <svg class="spark" id="cpuChart" viewBox="0 0 600 120" preserveAspectRatio="none"></svg>
+    <div class="muted" style="display:flex;gap:24px;margin-top:8px">
+      <span>CPU: <b id="cpuNow">–</b></span>
+      <span>内存: <b id="memNow">–</b></span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>成本(按模型)</h2>
+    <table id="costTable"><thead><tr>
+      <th>模型</th><th class="num">请求数</th><th class="num">Tokens</th><th class="num">费用</th>
+    </tr></thead><tbody></tbody></table>
+    <div class="muted" id="costMeta" style="margin-top:10px"></div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:1fr 1fr">
+    <div class="panel">
+      <h2>已注册工具</h2>
+      <div id="toolsList"></div>
+    </div>
+    <div class="panel">
+      <h2>LLM 连通</h2>
+      <div id="llmInfo"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Prometheus 原始指标 <span class="muted" style="font-weight:400">/api/metrics</span></h2>
+    <pre id="rawMetrics" style="margin:0;max-height:240px;overflow:auto;font-size:12px;
+      color:var(--muted);white-space:pre-wrap"></pre>
+  </div>
+</main>
+
+<script>
+// 纯原生,无外部依赖。轮询自身 API,内存里滚动保存采样序列。
+const cpuHist = [], memHist = [], MAX = 60;
+let paused = false, timer = null;
+
+async function jget(url){
+  const r = await fetch(url, {headers:{'X-API-Key': localStorage.getItem('sa_key')||''}});
+  if(!r.ok) throw new Error(url+' → '+r.status);
+  return r.json();
+}
+async function tget(url){
+  const r = await fetch(url); if(!r.ok) throw new Error(url+' '+r.status); return r.text();
+}
+function fmt(n){ return (n==null?'–':Number(n).toLocaleString()); }
+function money(n,cur){ return (n==null?'–':(cur||'¥')+Number(n).toFixed(4)); }
+
+function kpi(title,val,sub){
+  return `<div class="card"><h3>${title}</h3><div class="val">${val}</div>
+    <div class="sub">${sub||''}</div></div>`;
+}
+
+function drawSpark(id, data, max){
+  const svg=document.getElementById(id); const W=600,H=120;
+  if(!data.length){ svg.innerHTML=''; return; }
+  const mx = max || Math.max(...data,1);
+  const step = W/Math.max(data.length-1,1);
+  const pts = data.map((v,i)=>[i*step, H-(v/mx)*(H-8)-4]);
+  const line = pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' ');
+  const area = line+` L ${W} ${H} L 0 ${H} Z`;
+  svg.innerHTML = `<path class="area" d="${area}"/><path d="${line}"/>`;
+}
+
+async function tick(){
+  if(paused) return;
+  try{
+    const h = await jget('/api/health');
+    document.getElementById('healthDot').className = 'dot ok';
+    document.getElementById('statusText').textContent =
+      `运行中 · 版本 ${h.version} · 已运行 ${Math.floor(h.uptime_seconds/60)} 分`;
+
+    const sess = h.sessions||{}, reqs = h.requests||{};
+    const total = reqs.total||0, errs = reqs.errors||0;
+    const errRate = total? ((errs/total)*100).toFixed(1)+'%':'0%';
+    document.getElementById('kpis').innerHTML =
+      kpi('总请求', fmt(total), `错误 ${fmt(errs)}`) +
+      kpi('错误率', errRate, errs>0?'⚠ 有失败请求':'健康') +
+      kpi('活跃会话', fmt(sess.active_sessions!=null?sess.active_sessions:'–'),
+          `上限 ${sess.max_sessions!=null?sess.max_sessions:'–'}`) +
+      kpi('在途请求', fmt(h.inflight), '正在处理');
+
+    const sys = h.system||{};
+    if(sys.cpu_percent!=null){
+      cpuHist.push(sys.cpu_percent); if(cpuHist.length>MAX)cpuHist.shift();
+      memHist.push(sys.memory_percent); if(memHist.length>MAX)memHist.shift();
+      drawSpark('cpuChart', cpuHist, 100);
+      document.getElementById('cpuNow').textContent = sys.cpu_percent.toFixed(0)+'%';
+      document.getElementById('memNow').textContent =
+        sys.memory_percent.toFixed(0)+'% ('+(sys.memory_used_gb||'?')+' GB)';
+    }
+
+    const llm = h.llm||{};
+    document.getElementById('llmInfo').innerHTML =
+      `<div><span class="dot ${llm.reachable?'ok':'bad'}"></span>
+        ${llm.reachable?'可达':'不可达'} <span class="tag">${llm.model||'?'}</span></div>
+       <div class="muted" style="margin-top:8px;word-break:break-all">${llm.base_url||''}</div>
+       ${llm.latency_ms!=null?`<div class="muted">延迟 ${llm.latency_ms} ms</div>`:''}
+       ${llm.error?`<div class="err">${llm.error}</div>`:''}`;
+  }catch(e){
+    document.getElementById('healthDot').className='dot bad';
+    document.getElementById('statusText').innerHTML=`<span class="err">${e.message}</span>`;
+  }
+
+  try{
+    const c = await jget('/api/costs');
+    const tb = document.querySelector('#costTable tbody');
+    const rows = Object.entries(c.by_model||{});
+    tb.innerHTML = rows.length? rows.map(([m,d])=>
+      `<tr><td>${m}</td><td class="num">${fmt(d.request_count||d.requests)}</td>
+        <td class="num">${fmt(d.total_tokens||d.tokens)}</td>
+        <td class="num">${money(d.total_cost||d.cost,c.currency)}</td></tr>`).join('')
+      : `<tr><td colspan="4" class="muted">暂无成本记录(发起对话后出现)</td></tr>`;
+    document.getElementById('costMeta').textContent =
+      `合计 ${money(c.total_cost,c.currency)} · ${fmt(c.total_tokens)} tokens · `+
+      `${fmt(c.request_count)} 次调用 · 价格版本 ${c.price_version||'?'}`;
+  }catch(e){ document.getElementById('costMeta').innerHTML=`<span class="err">成本接口: ${e.message}</span>`; }
+
+  try{
+    const t = await jget('/api/tools');
+    document.getElementById('toolsList').innerHTML =
+      (t.tools&&t.tools.length)? t.tools.map(x=>
+        `<div style="margin-bottom:8px"><span class="tag">${x.name}</span>
+          <span class="muted"> ${x.description||''}</span></div>`).join('')
+      : '<span class="muted">未注册工具</span>';
+  }catch(e){ document.getElementById('toolsList').innerHTML=`<span class="err">${e.message}</span>`; }
+
+  try{
+    document.getElementById('rawMetrics').textContent = await tget('/api/metrics');
+  }catch(e){ document.getElementById('rawMetrics').textContent = '/api/metrics: '+e.message; }
+
+  document.getElementById('lastUpdate').textContent =
+    '更新于 ' + new Date().toLocaleTimeString();
+}
+
+document.getElementById('themeBtn').onclick = ()=>{
+  const cur = document.documentElement.getAttribute('data-theme')==='light'?'':'light';
+  document.documentElement.setAttribute('data-theme',cur);
+  document.getElementById('themeBtn').textContent = cur==='light'?'☀':'🌙';
+};
+document.getElementById('pauseBtn').onclick = (e)=>{
+  paused=!paused; e.target.textContent = paused?'▶ 继续':'⏸ 暂停';
+  if(!paused) tick();
+};
+
+tick();
+timer = setInterval(tick, 3000);  // 每 3 秒刷新
+</script>
+</body>
+</html>

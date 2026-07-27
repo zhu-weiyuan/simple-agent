@@ -126,3 +126,24 @@ python test_graph_engine.py # 图引擎测试
 ## 📝 License
 
 MIT
+
+## Production start (P6)
+
+规范入口为 `app_prod.py`(`app.prod.py` 为兼容 shim):
+
+```bash
+# 单 worker(默认)
+uvicorn app_prod:app --host 0.0.0.0 --port 8000
+
+# 多 worker(内存限流/会话为进程内状态,多 worker 时需外部
+# session 亲和或共享存储,见遗留风险)
+WORKERS=2 python app_prod.py
+```
+
+关键环境变量:`OPENAI_API_KEY`、`OPENAI_BASE_URL`(**须含 /v1**)、
+`OPENAI_MODEL`、`REQUEST_TIMEOUT_SECONDS`(默认 60)、`WORKERS`(默认 1)、
+`MAX_SESSIONS`(LRU 上限,默认 500)、`CONVERSATIONS_DB`、
+`RATE_LIMIT_REQUESTS`/`RATE_LIMIT_WINDOW`、`API_KEYS`、`SHUTDOWN_TIMEOUT_SECONDS`。
+
+探针:`/healthz`(liveness)、`/api/ready`(readiness)、`/api/health`(详情)、
+`/api/metrics`(Prometheus)。
