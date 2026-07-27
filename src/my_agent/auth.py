@@ -293,6 +293,9 @@ class UserStore:
     def _conn(self):
         return self._persistent_conn or self._new_conn()
 
+    def _user_columns(self, conn) -> set[str]:
+        return {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+
     def _ensure_table(self) -> None:
         with self._conn() as conn:
             conn.execute(
@@ -306,10 +309,10 @@ class UserStore:
                 )
                 """
             )
-            # 旧库迁移:conversations.db 可能已有一张遗留的 users 表(多租户时期,
-            # 列名完全不同)。CREATE TABLE IF NOT EXISTS 见表存在即跳过,
-            # 后续 SELECT/INSERT 会因缺列直接 500 —— 这里逐列补齐。
-            cols = {r[1] for r in conn.execute("PRAGMA table_info(users)")}
+            # Existing installations may have a legacy multi-tenant users table.
+            # Add optional columns where possible and keep required legacy columns
+            # populated in login_or_register below.
+            cols = self._user_columns(conn)
             for col, decl in (
                 ("user_id", "TEXT"),
                 ("username", "TEXT"),
@@ -336,9 +339,18 @@ class UserStore:
             ).fetchone()
             if row is None:
                 pw_hash = hash_password(password) if password else ""
+                columns = self._user_columns(conn)
+                values = {"user_id": user_id, "username": username, "password_hash": pw_hash}
+                if "id" in columns:
+                    values["id"] = user_id
+                if "tenant_id" in columns:
+                    values["tenant_id"] = "default"
+                if "display_name" in columns:
+                    values["display_name"] = username
+                names = list(values)
                 conn.execute(
-                    "INSERT INTO users (user_id, username, password_hash) VALUES (?, ?, ?)",
-                    (user_id, username, pw_hash),
+                    f"INSERT INTO users ({', '.join(names)}) VALUES ({', '.join('?' for _ in names)})",
+                    [values[name] for name in names],
                 )
                 conn.commit()
                 return UserRecord(user_id, username, bool(pw_hash))
