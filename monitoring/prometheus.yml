@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'simple-agent'
+    static_configs:
+      - targets: ['simple-agent:8000']
+    metrics_path: '/api/metrics'
+    scrape_timeout: 10s
+    
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    # Redis exporter would be needed for full metrics
+    
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

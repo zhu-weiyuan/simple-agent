@@ -1,0 +1,180 @@
+version: "3.8"
+
+services:
+  simple-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: simple-agent-app
+    ports:
+      - "8000:8000"
+    environment:
+      # LLM Configuration (no insecure defaults — fail fast if unset)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:?OPENAI_API_KEY must be set}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://host.docker.internal:8080}
+      - OPENAI_MODEL=${OPENAI_MODEL:-qwen3.5}
+      
+      # Application Settings
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - RATE_LIMIT_REQUESTS=${RATE_LIMIT_REQUESTS:-30}
+      - RATE_LIMIT_WINDOW=${RATE_LIMIT_WINDOW:-60}
+      
+      # Security
+      - API_KEY=${API_KEY:-}
+      - API_KEYS=${API_KEYS:-}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set}
+      - JWT_ALGORITHM=${JWT_ALGORITHM:-HS256}
+      - JWT_EXPIRATION_MINUTES=${JWT_EXPIRATION_MINUTES:-60}
+      
+      # Health Check Configuration
+      - HEALTH_CHECK_LLM_TIMEOUT=${HEALTH_CHECK_LLM_TIMEOUT:-3}
+      
+      # Observability
+      - METRICS_ENABLED=${METRICS_ENABLED:-true}
+      - TRACING_ENABLED=${TRACING_ENABLED:-true}
+      - CORRELATION_ID_HEADER=${CORRELATION_ID_HEADER:-X-Request-ID}
+      
+      # Resource Limits
+      - MAX_CONCURRENT_REQUESTS=${MAX_CONCURRENT_REQUESTS:-10}
+      - REQUEST_TIMEOUT_SECONDS=${REQUEST_TIMEOUT_SECONDS:-120}
+      
+      # Graceful Shutdown
+      - SHUTDOWN_TIMEOUT_SECONDS=${SHUTDOWN_TIMEOUT_SECONDS:-30}
+    volumes:
+      - ./memory:/app/memory:rw
+      - ./logs:/app/logs:rw
+      - ./checkpoints:/app/checkpoints:rw
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    stop_grace_period: 30s
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - simple-agent-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    container_name: simple-agent-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - simple-agent-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # Optional: pgvector for advanced RAG (uncomment if needed)
+  # postgres:
+  #   image: pgvector/pgvector:pg16
+  #   container_name: simple-agent-postgres
+  #   environment:
+  #     - POSTGRES_USER=${POSTGRES_USER:-simpleagent}
+  #     - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+  #     - POSTGRES_DB=${POSTGRES_DB:-simpleagent}
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #     - ./migrations:/docker-entrypoint-initdb.d:ro
+  #   ports:
+  #     - "127.0.0.1:5432:5432"
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-simpleagent} -d ${POSTGRES_DB:-simpleagent}"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #   networks:
+  #     - simple-agent-network
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: '1.0'
+  #         memory: 1G
+
+  # Prometheus for metrics scraping (optional monitoring)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: simple-agent-prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.enable-lifecycle'
+    restart: unless-stopped
+    networks:
+      - simple-agent-network
+    profiles:
+      - monitoring
+
+  # Grafana for visualization (optional monitoring)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: simple-agent-grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD must be set}
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-piechart-panel
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    networks:
+      - simple-agent-network
+    profiles:
+      - monitoring
+
+volumes:
+  redis_data:
+  postgres_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  simple-agent-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

@@ -88,9 +88,9 @@ async def rate_limit_middleware(request: Request, call_next):
     client_ip = request.client.host if request.client else "unknown"
 
     if not _rate_limiter.is_allowed(client_ip):
-        return HTTPException(
+        return JSONResponse(
             status_code=429,
-            detail={"error": "Rate limit exceeded", "retry_after": _rate_limiter.window}
+            content={"error": "Rate limit exceeded", "retry_after": _rate_limiter.window},
         )
 
     # Request timing — measure latency per request
@@ -231,8 +231,13 @@ async def health():
         return {"ok": True, "agent": agent.name, "version": agent.version, "health_error": str(e)}
 
 
-@app.get("/api/tools")
-async def list_tools():
+@app.get("/api/ready")
+async def ready():
+    """Lightweight readiness probe for orchestrators."""
+    return {"ready": True, "checks": {"process": True, "agent": agent is not None}}
+
+
+
     """List all registered tools with descriptions."""
     tools = []
     for name, tool in agent.tool_registry.tools.items():
