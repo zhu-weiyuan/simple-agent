@@ -673,7 +673,7 @@ class SimpleAgent:
 
     def card(self) -> "AgentCard":
         """获取 Agent Card（A2A 协议兼容）"""
-        tool_names = list(self.tool_registry._handlers.keys()) if hasattr(self.tool_registry, '_handlers') else []
+        tool_names = self.tool_registry.all_names()
 
         return AgentCard(
             name=self.name,
