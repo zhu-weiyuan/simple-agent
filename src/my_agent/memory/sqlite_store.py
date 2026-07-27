@@ -382,10 +382,14 @@ class SqliteConversationStore:
         return result
 
     # ── 用户 ↔ 会话归属 ─────────────────────────────────────
-    def set_session_user(self, session_id: str, user_id: str, title: str = "") -> None:
-        """建立会话归属 (首次写入创建 session 行)。title 非空时更新。"""
+    def set_session_user(self, session_id: str, user_id: str, title: str = "") -> bool:
+        """Associate a new or unowned session with a user without overwriting ownership."""
         with self._get_conn() as conn:
             conn.execute("INSERT OR IGNORE INTO sessions (id) VALUES (?)", (session_id,))
+            row = conn.execute("SELECT user_id FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            owner = row["user_id"] if row else None
+            if owner and owner != "anonymous" and owner != user_id:
+                return False
             if title:
                 conn.execute(
                     "UPDATE sessions SET user_id = ?, title = ?, updated_at = datetime('now') WHERE id = ?",
@@ -397,6 +401,7 @@ class SqliteConversationStore:
                     (user_id, session_id),
                 )
             conn.commit()
+            return True
 
     def list_user_sessions(self, user_id: str, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
         """返回某 user 的历史会话 (newest first)。"""

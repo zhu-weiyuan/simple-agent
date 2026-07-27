@@ -875,10 +875,17 @@ async def chat(request: Request, req: ChatRequest):
         raise HTTPException(503, "async LLM client unavailable (httpx not installed)")
 
     safe_message = _sanitize_message(req.message)
-    # user_id: 显式请求体 > 中间件解析 (JWT/X-User-Id) > 匿名
     user_id = (req.user_id or getattr(request.state, "user_id", None)
                or auth_mod.ANONYMOUS_USER_ID)
-    session_id, session = session_manager.get_or_create(req.session_id, user_id=user_id)
+    if req.session_id:
+        info = await asyncio.to_thread(_sqlite_store.get_session_info, req.session_id)
+        owner = (info or {}).get("user_id")
+        if owner and owner != "anonymous" and owner != user_id:
+            raise HTTPException(403, "session does not belong to current user")
+    try:
+        session_id, session = session_manager.get_or_create(req.session_id, user_id=user_id)
+    except PermissionError:
+        raise HTTPException(403, "session does not belong to current user")
 
     # 跨会话用户长期记忆: 召回 → 注入到本会话领头 system 消息的"用户背景"分区。
     # 只更新 role=system 内容, 绝不写入对话历史 (不泄漏)。
@@ -922,6 +929,7 @@ async def chat(request: Request, req: ChatRequest):
                        "stop_reason": "error"}
                 yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
             finally:
+                await asyncio.to_thread(session_manager.persist_session, session_id)
                 _schedule_memory_extraction(user_id, session)
                 yield "data: [DONE]\n\n"
 
@@ -954,6 +962,7 @@ async def chat(request: Request, req: ChatRequest):
     obs_metrics.observe_histogram("request_latency", elapsed_ms)
 
     # 会话结束异步提炼长期记忆 (不阻塞响应; 幂等键=消息范围哈希; 规则降级)。
+    await asyncio.to_thread(session_manager.persist_session, session_id)
     _schedule_memory_extraction(user_id, session)
 
     return {

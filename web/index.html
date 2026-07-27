@@ -1554,9 +1554,12 @@ async function sendMessage(forceText) {
           try {
             const obj = JSON.parse(jsonStr);
             if (obj.session_id) returnedSid = obj.session_id;
-            const chunk = obj.token || obj.content || '';
-            if (chunk) {
-              fullText += chunk;
+            if (obj.token) {
+              fullText += obj.token;
+              assistantMsg.innerHTML = renderMd(fullText);
+              chat.scrollTop = chat.scrollHeight;
+            } else if (obj.done && !fullText && obj.content) {
+              fullText = obj.content;
               assistantMsg.innerHTML = renderMd(fullText);
               chat.scrollTop = chat.scrollHeight;
             }

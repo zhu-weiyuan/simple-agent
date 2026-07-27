@@ -82,7 +82,10 @@ class SessionManager:
         if self.store is None:
             return
         try:
-            self.store.set_session_user(session_id, user_id)
+            if not self.store.set_session_user(session_id, user_id):
+                raise PermissionError("session belongs to another user")
+        except PermissionError:
+            raise
         except Exception as e:  # noqa: BLE001 - 归属记录失败不阻塞对话
             logger.warning("failed to record session owner %s/%s: %s",
                            user_id, session_id, e)
