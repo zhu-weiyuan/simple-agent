@@ -10,6 +10,7 @@ Production-grade observability layer with:
 import json
 import time
 import threading
+from collections import deque
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
@@ -26,7 +27,11 @@ class MetricsCollector:
         self._counters: Dict[str, int] = {}
         self._histograms: Dict[str, dict] = {}
         self._gauges: Dict[str, float] = {}
+        # P6: bounded event buffer to prevent unbounded memory growth
+        self._events: "deque[Dict[str, object]]" = deque(maxlen=5000)
         self._lock = threading.Lock()
+        # (metric_name -> deque[(ts, value)]) raw observations for sliding windows
+        self._observations: Dict[str, deque] = {}
         self._default_buckets = [10, 50, 100, 250, 500, 1000, 2500, 5000, 10000]
 
     def increment_counter(self, name: str, labels: Dict[str, str] = None) -> None:
@@ -48,9 +53,31 @@ class MetricsCollector:
             hist = self._histograms[key]
             hist['total'] += 1
             hist['sum'] += value_ms
+            obs = self._observations.setdefault(key, deque(maxlen=10000))
+            obs.append((time.time(), value_ms))
             for bucket in bucket_list:
                 if value_ms <= bucket:
                     hist[bucket] += 1
+
+    def record_event(self, event_name: str, request_id: str = "", duration_ms: float = 0, **extra) -> None:
+        with self._lock:
+            self._events.append({"event_name": event_name, "request_id": request_id, "duration_ms": duration_ms, **extra})
+
+    def get_events(self) -> List[Dict[str, object]]:
+        with self._lock:
+            return list(self._events)
+
+    def window_average(self, metric_name: str, window_seconds: int) -> Optional[float]:
+        """P6: 真滑动窗口 — 返回 window 内该指标观测值的平均 (无观测返回 None)。"""
+        cutoff = time.time() - window_seconds
+        with self._lock:
+            values = []
+            for key, obs in self._observations.items():
+                if metric_name in key:
+                    values.extend(v for ts, v in obs if ts >= cutoff)
+        if not values:
+            return None
+        return sum(values) / len(values)
 
     def set_gauge(self, name: str, value: float,
                   labels: Dict[str, str] = None) -> None:
@@ -79,24 +106,45 @@ class MetricsCollector:
             return metrics
 
     def get_prometheus_text(self) -> str:
+        """合法 Prometheus 文本: # TYPE 行只含基础指标名 (不带 label),每个基础名只输出一次。"""
         lines = []
-        for key, value in self._counters.items():
-            lines.append(f"# TYPE {key} counter")
+        typed = set()
+
+        def base_name(key: str) -> str:
+            return key.split("{", 1)[0]
+
+        for key, value in sorted(self._counters.items()):
+            b = base_name(key)
+            if b not in typed:
+                lines.append(f"# TYPE {b} counter")
+                typed.add(b)
             lines.append(f"{key} {value}")
 
-        for key, hist in self._histograms.items():
-            lines.append(f"# TYPE {key} histogram")
+        for key, hist in sorted(self._histograms.items()):
+            b = base_name(key)
+            if b not in typed:
+                lines.append(f"# TYPE {b} histogram")
+                typed.add(b)
             total = hist.get('total', 0)
             sum_val = hist.get('sum', 0.0)
-            for bucket in sorted([b for b in hist.keys()
-                                  if b not in ('total', 'sum')]):
-                lines.append(f'{key}_bucket{{le="{bucket}"}} {hist[bucket]}')
-            lines.append(f'{key}_bucket{{le="+Inf"}} {total}')
-            lines.append(f'{key}_count {total}')
-            lines.append(f'{key}_sum {sum_val:.2f}')
+            # 带 label 的 key: 合法格式要求 base_bucket{labels,le=...}
+            if "{" in key:
+                inner = key[key.index("{") + 1:key.rindex("}")]
+                label_prefix = inner + ","
+            else:
+                label_prefix = ""
+            for bucket in sorted([k for k in hist.keys()
+                                  if k not in ('total', 'sum')]):
+                lines.append(f'{b}_bucket{{{label_prefix}le="{bucket}"}} {hist[bucket]}')
+            lines.append(f'{b}_bucket{{{label_prefix}le="+Inf"}} {total}')
+            lines.append(f'{b}_count{{{inner}}} {total}' if "{" in key else f'{b}_count {total}')
+            lines.append(f'{b}_sum{{{inner}}} {sum_val:.2f}' if "{" in key else f'{b}_sum {sum_val:.2f}')
 
-        for key, value in self._gauges.items():
-            lines.append(f"# TYPE {key} gauge")
+        for key, value in sorted(self._gauges.items()):
+            b = base_name(key)
+            if b not in typed:
+                lines.append(f"# TYPE {b} gauge")
+                typed.add(b)
             lines.append(f"{key} {value}")
 
         return "\n".join(lines)
@@ -144,12 +192,10 @@ class AlertService:
                 if elapsed < rule['cooldown']:
                     continue
 
-            metrics = self.metrics.get_metrics()
-            avg_latency = None
-            for key, hist in metrics['histograms'].items():
-                if rule['metric_name'] in key:
-                    avg_latency = hist.get('avg_ms', 0)
-                    break
+            # P6: 真滑动窗口 — 只统计 rule['window'] 秒内的观测,
+            # 而非自进程启动以来的全量平均。
+            avg_latency = self.metrics.window_average(
+                rule['metric_name'], rule['window'])
 
             if avg_latency is not None and avg_latency > rule['threshold']:
                 self._alerts_triggered[name] = now
