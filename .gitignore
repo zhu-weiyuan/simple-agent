@@ -47,3 +47,13 @@ AGENT_FRAMEWORKS_VERIFIED.md
 AGENT_TECH_PAPERS_2026_04*.md
 AGENT_TECH_SURVEY_2026_05.md
 LEARNING_LANGGRAPH.md
+
+# Databases & logs
+*.db
+*.db-shm
+*.db-wal
+*.log
+logs/
+
+# Frontend
+node_modules/
