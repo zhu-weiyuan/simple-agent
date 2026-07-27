@@ -51,13 +51,17 @@ def _backoff_delay(attempt: int) -> float:
 
 
 def _merge_reasoning(data: Dict[str, Any]) -> Dict[str, Any]:
-    """mimo-v2.5 style: content 为空但 reasoning_content 存在时合并。"""
-    if "choices" in data and data["choices"]:
-        msg = data["choices"][0].get("message", {})
-        content = msg.get("content") or ""
-        reasoning = msg.get("reasoning_content") or ""
-        if not content.strip() and reasoning:
-            data["choices"][0]["message"]["content"] = reasoning
+    """Normalize completion payload without exposing hidden reasoning.
+
+    Some OpenAI-compatible providers return ``reasoning_content`` alongside
+    the user-facing ``content``. It is intentionally discarded at the client
+    boundary so internal chain-of-thought is never persisted or streamed.
+    """
+    for choice in data.get("choices") or []:
+        message = choice.get("message") or {}
+        message.pop("reasoning_content", None)
+        delta = choice.get("delta") or {}
+        delta.pop("reasoning_content", None)
     return data
 
 
@@ -346,7 +350,7 @@ class AsyncLLMClient:
                 if not choices:
                     continue
                 delta = choices[0].get("delta", {}) or {}
-                piece = delta.get("content") or delta.get("reasoning_content") or ""
+                piece = delta.get("content") or ""
                 if piece:
                     content_parts.append(piece)
                     yield {"type": "delta", "content": piece}

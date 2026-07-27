@@ -86,8 +86,7 @@ class LLMClient:
 
         msg = data["choices"][0]["message"]
         content = msg.get("content") or ""
-        reasoning = msg.get("reasoning_content") or ""
-        return (content + reasoning).strip() or reasoning.strip()
+        return content.strip()
 
     def chat_stream(
         self,
