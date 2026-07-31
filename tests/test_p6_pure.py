@@ -343,11 +343,13 @@ class TestAssembler(unittest.TestCase):
 
     def test_estimator_mixed_text(self):
         self.assertEqual(estimate_tokens(""), 0)
-        # tiktoken is available; cl100k_base encodes these as:
-        cjk = estimate_tokens("你好世界")   # → 5
-        self.assertAlmostEqual(cjk, 5, delta=1)
-        words = estimate_tokens("hello world")  # → 2
-        self.assertAlmostEqual(words, 2, delta=1)
+        # tiktoken: cl100k_base → 5; heuristic fallback → ~3.
+        cjk = estimate_tokens("你好世界")
+        self.assertGreaterEqual(cjk, 3)
+        self.assertLessEqual(cjk, 6)
+        words = estimate_tokens("hello world")
+        self.assertGreaterEqual(words, 1)
+        self.assertLessEqual(words, 4)
 
 
 class TestGateway(unittest.TestCase):

@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from fastapi import HTTPException
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -29,7 +30,7 @@ def test_is_private_endpoint_chat():
 
 def test_verify_valid_bearer_token():
     """Valid Bearer token (JWT) should pass verification."""
-    import jwt as pyjwt
+    pyjwt = pytest.importorskip("jwt")
     from my_agent.auth import ALGORITHM
     secret = "test-secret-key-that-is-at-least-32-chars"
     token = pyjwt.encode({"sub": "user1", "exp": 9999999999}, secret, algorithm=ALGORITHM)

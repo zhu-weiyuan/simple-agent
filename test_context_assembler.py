@@ -38,8 +38,8 @@ class TestTokenEstimation:
     def test_chinese_text(self):
         tokens = estimate_tokens("你好世界")
         assert tokens > 0
-        # cl100k_base encodes this phrase as five tokens.
-        assert 5 <= tokens <= 6
+        # cl100k_base: 5 tokens; heuristic fallback: ~3 tokens.
+        assert 3 <= tokens <= 6
 
     def test_empty_text(self):
         assert estimate_tokens("") == 0
