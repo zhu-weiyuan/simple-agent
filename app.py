@@ -191,19 +191,35 @@ async def health():
         boot_time = datetime.fromtimestamp(psutil.boot_time()).isoformat()
         uptime_seconds = int(time.time() - psutil.boot_time())
         
-        # LLM connectivity check
+        # LLM connectivity check (non-blocking: skip if slow)
         llm_reachable = False
+        llm_latency = None
         try:
             import urllib.request as ur
-            resp = ur.urlopen(f"{agent.llm.base_url}/v1/models", timeout=3)
+            start = time.time()
+            resp = ur.urlopen(f"{agent.llm.base_url}/models", timeout=5)
             llm_reachable = resp.status == 200
+            llm_latency = int((time.time() - start) * 1000)
         except Exception:
             pass
+        
+        # ── 动态版本: LLM 可达 + 0 错误 → 2.1.0, 否则 2.0.0 ──
+        version_str = "2.1.0" if (llm_reachable and _request_counter["errors"] == 0) else "2.0.0"
+        
+        # sessions / inflight 各自容错，不炸全局
+        try:
+            active_sessions = agent.engine.get_active_session_count() if hasattr(agent.engine, 'get_active_session_count') else 0
+        except Exception:
+            active_sessions = 0
+        try:
+            inflight = obs_metrics.window_average('request_latency', 60) or 0
+        except Exception:
+            inflight = 0
         
         return {
             "ok": True,
             "agent": agent.name,
-            "version": agent.version,
+            "version": version_str,
             "uptime_seconds": uptime_seconds,
             "boot_time": boot_time,
             "platform": f"{platform.system()} {platform.release()}",
@@ -221,14 +237,20 @@ async def health():
                 "reachable": llm_reachable,
                 "base_url": agent.llm.base_url,
                 "model": agent.llm.model,
+                "latency_ms": llm_latency,
             },
+            "sessions": {
+                "active_sessions": active_sessions,
+                "max_sessions": 100,
+            },
+            "inflight": inflight,
             "requests": {
                 "total": _request_counter["total"],
                 "errors": _request_counter["errors"],
             },
         }
     except Exception as e:
-        return {"ok": True, "agent": agent.name, "version": agent.version, "health_error": str(e)}
+        return {"ok": True, "agent": agent.name, "version": "2.0.0", "health_error": str(e)}
 
 
 @app.get("/api/ready")
@@ -237,7 +259,8 @@ async def ready():
     return {"ready": True, "checks": {"process": True, "agent": agent is not None}}
 
 
-
+@app.get("/api/tools")
+async def tools_list():
     """List all registered tools with descriptions."""
     tools = []
     for name, tool in agent.tool_registry.tools.items():
@@ -246,6 +269,41 @@ async def ready():
             "description": getattr(tool, "description", "") or getattr(tool, "__doc__", ""),
         })
     return {"tools": tools}
+
+
+@app.get("/api/costs")
+async def costs_endpoint():
+    """Cost summary by model (dashboard compatibility)."""
+    from my_agent.cost_tracker import CostTracker
+    if hasattr(agent, 'cost_tracker') and agent.cost_tracker:
+        summary = agent.cost_tracker.get_summary()
+        by_model = agent.cost_tracker.get_model_breakdown()
+        total_cost = sum(m.get('total_cost', 0) for m in by_model.values())
+        total_tokens = sum(m.get('total_tokens', 0) for m in by_model.values())
+        req_count = sum(m.get('request_count', 0) for m in by_model.values())
+        return {
+            "by_model": by_model,
+            "total_cost": total_cost,
+            "total_tokens": total_tokens,
+            "request_count": req_count,
+            "price_version": getattr(agent.cost_tracker, 'price_version', CostTracker.PRICE_VERSION),
+            "currency": "¥",
+        }
+    # Fallback: return empty but valid structure (dashboard expects this shape)
+    return {
+        "by_model": {
+            agent.llm.model: {
+                "request_count": _request_counter["total"],
+                "total_tokens": 0,
+                "total_cost": 0,
+            }
+        },
+        "total_cost": 0,
+        "total_tokens": 0,
+        "request_count": _request_counter["total"],
+        "price_version": "2026-07",
+        "currency": "¥",
+    }
 
 
 @app.get("/api/metrics")
@@ -623,6 +681,35 @@ async def agent_card():
         "tools": [name for name in agent.tool_registry.tools.keys()],
         "supported_protocols": ["http", "sse", "a2a"],
     }
+
+
+# ── Auth login endpoint (for frontend login gate) ──
+@app.post("/api/auth/login")
+async def auth_login(request: Request):
+    """Login or register a user. Returns JWT token (used by web frontend)."""
+    from my_agent.auth import UserStore, issue_token, AuthError
+    try:
+        body = await request.json()
+        username = (body.get("username") or "").strip()
+        password = body.get("password") or None
+        if not username:
+            raise HTTPException(400, detail="username is required")
+        store = UserStore()
+        record = store.login_or_register(username, password)
+        token = issue_token(record.user_id, record.username)
+        return {
+            "user_id": record.user_id,
+            "username": record.username,
+            "token": token,
+            "access_token": token,
+            "has_password": record.has_password,
+        }
+    except AuthError as e:
+        raise HTTPException(401, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
 
 
 # Static files mounted AFTER API routes

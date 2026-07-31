@@ -89,7 +89,7 @@ class AuthMiddleware:
 
     @staticmethod
     def is_public_endpoint(path: str) -> bool:
-        return path in {"/health", "/healthz", "/api/health", "/api/ready", "/api/metrics"}
+        return path in {"/health", "/healthz", "/api/health", "/api/ready", "/api/metrics", "/api/auth/login"}
 
 
 def auth_required(func):

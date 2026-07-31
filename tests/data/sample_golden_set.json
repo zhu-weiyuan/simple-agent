@@ -1,0 +1,18 @@
+{
+  "version": "1.0",
+  "tasks": [
+    {"task_id": "normal_questions", "trials": [
+      {"trial_id": "normal-1", "input": "Explain what an AI agent is.", "reference_output": null},
+      {"trial_id": "normal-2", "input": "Say hello in Chinese.", "reference_output": null}
+    ]},
+    {"task_id": "edge_cases", "trials": [
+      {"trial_id": "edge-1", "input": "", "reference_output": null},
+      {"trial_id": "edge-2", "input": "Return a concise answer to: 2 + 2", "reference_output": null}
+    ]},
+    {"task_id": "tool_queries", "trials": [
+      {"trial_id": "tool-1", "input": "Calculate 15 * 7.", "reference_output": null},
+      {"trial_id": "tool-2", "input": "What time is it now?", "reference_output": null},
+      {"trial_id": "tool-3", "input": "List files in the current directory.", "reference_output": null}
+    ]}
+  ]
+}

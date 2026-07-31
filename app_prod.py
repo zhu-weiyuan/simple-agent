@@ -355,6 +355,24 @@ def _register_builtin_tools() -> None:
         except Exception as _exc:
             logger.warning("shell tool unavailable: %s", _exc)
 
+    # File tools (read_file, list_files) - always enabled, read-only safe ops
+    try:
+        from my_agent.tools.builtins.file import ReadFileTool, ListFilesTool
+        _read = ReadFileTool()
+        _list = ListFilesTool()
+        tool_registry.add(
+            name=_read.name, handler=_read.execute,
+            description=_read.description, parameters=_read.parameters,
+            tags=list(getattr(_read, "tags", [])),
+        )
+        tool_registry.add(
+            name=_list.name, handler=_list.execute,
+            description=_list.description, parameters=_list.parameters,
+            tags=list(getattr(_list, "tags", [])),
+        )
+    except Exception as _exc:
+        logger.warning("file tools unavailable: %s", _exc)
+
 
 _register_builtin_tools()
 hooks = HookRegistry()
@@ -1320,16 +1338,18 @@ async def security_scan(req: SecurityRequest):
 
 @app.post("/api/intent")
 async def classify_intent(req: ChatRequest):
-    """关键词意图分类(无 LLM 调用)。旧 web UI 依赖此端点。"""
+    """关键词意图分类 (无 LLM 调用)。使用更精确的匹配避免单字误判。"""
     if not req.message.strip():
         raise HTTPException(400, "Empty message")
     text = req.message.lower()
+
+    # 改进的意图关键词 — 移除单字如"好"、"什么"、"请"等减少误判
     intents = {
-        "greeting": ["你好", "hello", "hi", "hey", "在吗", "早上好", "晚上好"],
-        "question": ["怎么", "什么", "为什么", "如何", "请问", "哪里", "多少", "who", "what", "how", "why"],
-        "command": ["帮我", "请", "执行", "run", "execute", "do this", "please"],
-        "feedback": ["谢谢", "感谢", "好", "不错", "满意", "thanks", "good", "great"],
-        "complaint": ["投诉", "不好", "差", "垃圾", "bug", "问题", "error", "broken"],
+        "greeting": ["你好", "hello", "hi", "hey", "在吗", "早上好", "晚上好", "下午好", "早安", "晚安"],
+        "question": ["怎么", "怎样", "为什么", "如何", "请问", "哪里", "who", "what", "how", "why"],
+        "command": ["帮我", "给我", "执行", "run", "execute", "do this", "生成", "创建"],
+        "feedback": ["谢谢", "感谢", "不错", "满意", "thanks", "good", "great", "很棒", "很好"],
+        "complaint": ["投诉", "不好用", "出错了", "垃圾", "bug", "问题", "error", "broken", "报错"],
     }
     scores = {intent: s for intent, kws in intents.items()
               if (s := sum(1 for kw in kws if kw in text)) > 0}
@@ -1340,11 +1360,11 @@ async def classify_intent(req: ChatRequest):
     else:
         top_intent, confidence, max_score = "general", 0.3, 1
     suggestions = {
-        "greeting": ["有什么可以帮你的?", "想聊点什么?", "需要查询什么信息?"],
-        "question": ["能详细说明一下吗?", "还有其他问题吗?", "需要我查资料吗?"],
-        "command": ["确认执行?", "需要更多参数?", "要查看结果吗?"],
-        "feedback": ["还有什么需要帮助的?", "有其他问题吗?", "感谢反馈!"],
-        "complaint": ["能详细描述问题吗?", "什么时间出现的?", "有错误截图吗?"],
+        "greeting": ["有什么可以帮你的？", "想聊点什么？", "需要查询什么信息?"],
+        "question": ["能详细说明一下吗？", "还有其他问题吗？", "需要我查资料吗?"],
+        "command": ["确认执行？", "需要更多参数？", "要查看结果吗?"],
+        "feedback": ["还有什么需要帮助的？", "有其他问题吗？", "感谢反馈!"],
+        "complaint": ["能详细描述问题吗？", "什么时间出现的？", "有错误截图吗?"],
         "general": ["请详细描述您的需求", "需要什么帮助?"],
     }
     return {

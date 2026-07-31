@@ -52,6 +52,234 @@
       "content": "今天天气 + 你的城市名",
       "confidence": 0.9,
       "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "Hello World",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "/hello",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "message",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "Hello, {name}!",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "message",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "Hello, Python!",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "data.csv",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "data.csv",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "data.csv",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "https://api.github.com/users/octocat",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "{func.__name__}: {elapsed:.4f} 秒",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "args={args}, kwargs={kwargs}",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "在我电脑上能跑",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "在任何电脑上都能跑",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "在我电脑上能跑啊！",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "python",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "app.py",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "/hello/张三",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "/search?q=Flask",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "message",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "你好，世界！",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "/items/{item_id}",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "item_id",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "一次构建，到处运行",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "message",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "Hello World",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "/items/{item_id}",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "item_id",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "完成了某个功能",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "n 必须为非负整数",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "__main__",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "F({i}) = {fibonacci(i)}",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "\\n前 10 项:",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "octocat",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "The Octocat",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "public_repos",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "Hello {name}",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
+    },
+    {
+      "source": "direct_quote",
+      "content": "新增了XXX功能",
+      "confidence": 0.9,
+      "timestamp": "2026-04-27"
     }
   ]
 }

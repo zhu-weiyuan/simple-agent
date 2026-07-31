@@ -904,6 +904,20 @@
     .welcome-feature { padding: 6px 10px; font-size: 11px; }
     .sidebar { width: 84vw; }
     .header-info p { display: none; }
+
+    /* Keep every toolbar action reachable without forcing the document wider
+       than a phone viewport. Actions wrap into compact header rows instead. */
+    header { align-items: flex-start; flex-wrap: wrap; gap: 8px; }
+    .header-left { min-width: 0; flex: 1 1 auto; }
+    .header-actions {
+      flex: 1 1 100%;
+      min-width: 0;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+    .user-badge { max-width: 150px; }
+    #userName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   }
 </style>
 </head>
@@ -1022,6 +1036,7 @@ const input = document.getElementById('user-input');
 const sendBtn = document.getElementById('send-btn');
 const spinner = document.getElementById('spinner');
 const welcome = document.getElementById('welcome');
+const MAX_MESSAGE_LENGTH = 4000;
 let loading = false;
 let firstMessage = true;
 
@@ -1257,8 +1272,13 @@ input.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
 input.addEventListener('input', () => {
+  // maxlength is not a complete guard for scripted fills and some IME/paste
+  // paths, so keep the displayed value within the API contract as well.
+  if (input.value.length > MAX_MESSAGE_LENGTH) {
+    input.value = input.value.slice(0, MAX_MESSAGE_LENGTH);
+  }
   const cc = document.getElementById('char-count');
-  if (cc) cc.textContent = input.value.length + '/4000';
+  if (cc) cc.textContent = input.value.length + '/' + MAX_MESSAGE_LENGTH;
 });
 
 // ── Theme ──────────────────────────────────────
@@ -1379,7 +1399,18 @@ function renderMd(text) {
   s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
   s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
-  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, rawHref) => {
+    // Model output is untrusted. Only render ordinary web links so Markdown
+    // cannot introduce javascript:, data:, or attribute-injection payloads.
+    try {
+      const url = new URL(rawHref.trim().replace(/&amp;/g, '&'), window.location.origin);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return label;
+      const href = url.href.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+      return `<a href="${href}" target="_blank" rel="noopener">${label}</a>`;
+    } catch (_) {
+      return label;
+    }
+  });
   s = s.replace(/^### (.+)$/gm, '<h3>$1</h3>');
   s = s.replace(/^## (.+)$/gm, '<h2>$1</h2>');
   s = s.replace(/^# (.+)$/gm, '<h1>$1</h1>');
@@ -1480,13 +1511,11 @@ function removeTyping() {
 }
 
 function clearChat() {
-  chat.innerHTML = '';
-  firstMessage = true;
-  const welcomeClone = welcome.cloneNode(true);
-  welcomeClone.id = 'welcome';
-  chat.appendChild(welcomeClone);
-  welcomeClone.style.display = 'flex';
-  addMsg('system', '🧹 对话已清空');
+  // Clearing the visible transcript must also detach the next message from the
+  // previous session; otherwise hidden history still influences later replies.
+  newChat(true);
+  addMsg('system', '\uD83E\uDDF9 \u5BF9\u8BDD\u5DF2\u6E05\u7A7A\uFF0C\u5DF2\u5F00\u59CB\u65B0\u7684\u4F1A\u8BDD');
+  input.focus();
 }
 
 // ── Send ────────────────────────────────────────
@@ -1498,6 +1527,11 @@ function sendQuick(text) {
 async function sendMessage(forceText) {
   const text = forceText || input.value.trim();
   if (!text || loading) return;
+  if (text.length > MAX_MESSAGE_LENGTH) {
+    addError(`?? ???????? ${MAX_MESSAGE_LENGTH} ???`);
+    input.focus();
+    return;
+  }
 
   addMsg('user', text);
   input.value = '';
@@ -1541,6 +1575,7 @@ async function sendMessage(forceText) {
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let renderedDone = false;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -1550,7 +1585,11 @@ async function sendMessage(forceText) {
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
           const jsonStr = line.slice(6);
-          if (jsonStr === '[DONE]') continue;
+          if (jsonStr === '[DONE]') {
+            // The server closes the stream only after its persistence `finally`
+            // block completes. Do not leave the reader early here.
+            continue;
+          }
           try {
             const obj = JSON.parse(jsonStr);
             if (obj.session_id) returnedSid = obj.session_id;
@@ -1558,25 +1597,23 @@ async function sendMessage(forceText) {
               fullText += obj.token;
               assistantMsg.innerHTML = renderMd(fullText);
               chat.scrollTop = chat.scrollHeight;
-            } else if (obj.done && !fullText && obj.content) {
-              fullText = obj.content;
-              assistantMsg.innerHTML = renderMd(fullText);
+            } else if (obj.done && obj.content && !renderedDone) {
+              renderedDone = true;
+              if (!fullText) {
+                fullText = obj.content;
+                assistantMsg.innerHTML = renderMd(fullText);
+              }
               chat.scrollTop = chat.scrollHeight;
             }
           } catch(e) {}
         }
       }
     } else {
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        fullText += chunk;
-        assistantMsg.innerHTML = renderMd(fullText);
-        chat.scrollTop = chat.scrollHeight;
-      }
+      const data = await resp.json();
+      fullText = data.reply || data.content || '';
+      if (data.session_id) returnedSid = data.session_id;
+      assistantMsg.innerHTML = renderMd(fullText);
+      chat.scrollTop = chat.scrollHeight;
     }
 
     // Add timestamp

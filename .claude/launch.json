@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "simple-agent-prod",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["app_prod.py"],
+      "port": 8000,
+      "url": "http://localhost:8000"
+    }
+  ]
+}

@@ -488,3 +488,132 @@ class SqliteConversationStore:
             self.close()
         except Exception:
             pass
+
+
+class PromptStore:
+    """SQLite-backed prompt version storage.
+
+    Provides durable storage for versioned prompts with:
+    - Automatic table creation
+    - JSON variable schemas
+    - Default-version tracking
+    - In-memory fallback if SQLite fails
+
+    This is the store used by PromptRegistry for versioned prompt
+    lifecycle management.
+    """
+
+    def __init__(self, db_path: str = "runtime/prompts.db") -> None:
+        self.db_path = db_path
+        self._conn: Optional[sqlite3.Connection] = None
+        try:
+            self._conn = sqlite3.connect(db_path)
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+        except Exception:
+            # In-memory fallback when SQLite path is unavailable
+            self._conn = sqlite3.connect(":memory:")
+            self._conn.row_factory = sqlite3.Row
+        self._ensure_table()
+
+    def _ensure_table(self) -> None:
+        with self._conn:
+            self._conn.execute("""
+                CREATE TABLE IF NOT EXISTS prompts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    version_no TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    variables TEXT NOT NULL DEFAULT '{}',
+                    is_default INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    UNIQUE(name, version_no)
+                )
+            """)
+            # Migrate old schema: add any missing columns
+            cols = {
+                r["name"]
+                for r in self._conn.execute("PRAGMA table_info(prompts)").fetchall()
+            }
+            if "variables" not in cols and "variables_schema" in cols:
+                self._conn.execute(
+                    "ALTER TABLE prompts RENAME COLUMN variables_schema TO variables"
+                )
+            if "updated_at" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE prompts ADD COLUMN updated_at TEXT"
+                    " NOT NULL DEFAULT (datetime('now'))"
+                )
+            self._conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_prompts_name
+                ON prompts(name, is_default)
+            """)
+
+    def add_prompt(
+        self,
+        name: str,
+        version_no: str,
+        content: str,
+        variables: Optional[Dict[str, Any]] = None,
+        is_default: bool = True,
+    ) -> None:
+        """Register a prompt version.
+
+        If is_default is True, any previously default version for the
+        same name is unmarked.
+        """
+        with self._conn:
+            if is_default:
+                self._conn.execute(
+                    "UPDATE prompts SET is_default = 0 WHERE name = ? AND is_default = 1",
+                    (name,),
+                )
+            self._conn.execute(
+                """INSERT OR REPLACE INTO prompts
+                   (name, version_no, content, variables, is_default, updated_at)
+                   VALUES (?, ?, ?, ?, ?, datetime('now'))""",
+                (name, version_no, content, json.dumps(variables or {}),
+                 1 if is_default else 0),
+            )
+
+    def get_prompt(self, name: str, version: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Retrieve a prompt version.
+
+        Args:
+            name: Prompt name.
+            version: Specific version. If None, returns the current default.
+
+        Returns:
+            Dict with keys 'name', 'version_no', 'content', 'is_default' or None.
+        """
+        if version:
+            row = self._conn.execute(
+                "SELECT name, version_no, content, is_default FROM prompts "
+                "WHERE name = ? AND version_no = ?",
+                (name, version),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT name, version_no, content, is_default FROM prompts "
+                "WHERE name = ? AND is_default = 1",
+                (name,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_prompts(self) -> List[Dict[str, Any]]:
+        """List all prompt versions ordered by name and version."""
+        rows = self._conn.execute(
+            "SELECT name, version_no, content, is_default FROM prompts "
+            "ORDER BY name, version_no"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def close(self) -> None:
+        """Close the database connection."""
+        if self._conn:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
