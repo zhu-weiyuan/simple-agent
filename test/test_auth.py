@@ -28,12 +28,16 @@ def test_is_private_endpoint_chat():
 
 
 def test_verify_valid_bearer_token():
-    """Valid Bearer token should pass verification."""
+    """Valid Bearer token (JWT) should pass verification."""
+    import jwt as pyjwt
+    from my_agent.auth import ALGORITHM
+    secret = "test-secret-key-that-is-at-least-32-chars"
+    token = pyjwt.encode({"sub": "user1", "exp": 9999999999}, secret, algorithm=ALGORITHM)
     request = MagicMock()
-    request.headers = {"Authorization": "Bearer valid-key"}
+    request.headers = {"Authorization": f"Bearer {token}"}
     request.query_params = {}
     
-    with patch.dict(os.environ, {"API_KEYS": "valid-key"}):
+    with patch.dict(os.environ, {"JWT_SECRET": secret}):
         result = AuthMiddleware.verify(request)
         assert result == True
 

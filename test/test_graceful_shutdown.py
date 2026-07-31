@@ -184,7 +184,7 @@ if __name__ == "__main__":
             try:
                 response = requests.get("http://localhost:8001/slow", timeout=10)
                 return response.status_code == 200
-            except:
+            except Exception:
                 return False
         
         # Start slow request in thread

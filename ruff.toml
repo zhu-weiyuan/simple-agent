@@ -7,6 +7,8 @@ ignore = [
     "E401",   # multiple imports on one line (common in app.py)
     "E402",   # module level import not at top
     "E501",   # line too long
+    "E701",   # multiple statements on one line (colon)
+    "E702",   # multiple statements on one line (semicolon)
     "E712",   # equality comparisons to True/False
     "E731",   # lambda assignment
     "E741",   # ambiguous variable name
