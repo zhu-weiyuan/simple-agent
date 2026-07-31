@@ -6,7 +6,7 @@ SimpleAgent v2.0 — Web Server (FastAPI)
 启动: python app.py
 访问: http://localhost:8000
 """
-import os, sys, time, platform, psutil
+import os, sys, time, platform, uuid, psutil
 from pathlib import Path
 from collections import defaultdict
 from datetime import datetime
@@ -84,6 +84,10 @@ async def rate_limit_middleware(request: Request, call_next):
         response = await call_next(request)
         return response
 
+    # ── Request correlation ID (P0: traceability) ────────────────
+    request_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex
+    request.state.request_id = request_id
+
     _request_counter["total"] += 1
     client_ip = request.client.host if request.client else "unknown"
 
@@ -99,6 +103,7 @@ async def rate_limit_middleware(request: Request, call_next):
         response = await call_next(request)
         elapsed = time.time() - start_time
         response.headers["X-Response-Time"] = f"{elapsed*1000:.1f}ms"
+        response.headers["X-Request-ID"] = request_id
         return response
     except Exception as e:
         _request_counter["errors"] += 1

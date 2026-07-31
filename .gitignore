@@ -18,6 +18,7 @@ env/
 # IDE
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 
@@ -28,26 +29,6 @@ env/
 .DS_Store
 Thumbs.db
 
-# Archives & debug files
-archive/
-debug_*.py
-test_httpx*.py
-test_ps_agent.py
-test_powershell.py
-2.py
-usage.txt
-syllogism.db
-~/.my-agent
-
-# Checkpoints (generated at runtime)
-checkpoints/
-
-# Non-source documents (keep README, technical docs)
-AGENT_FRAMEWORKS_VERIFIED.md
-AGENT_TECH_PAPERS_2026_04*.md
-AGENT_TECH_SURVEY_2026_05.md
-LEARNING_LANGGRAPH.md
-
 # Databases & logs
 *.db
 *.db-shm
@@ -55,5 +36,49 @@ LEARNING_LANGGRAPH.md
 *.log
 logs/
 
-# Frontend
-node_modules/
+# Runtime data
+runtime.sessions.json
+conversations.db
+prompts.db
+checkpoints/
+memory/facts.json
+memory/lessons.md
+
+# Coverage
+.coverage
+.coverage.json
+
+# Debug/temp scripts (root level)
+_apply_fix.py
+_fix_tool_audit.py
+_repro.py
+_repro_bug.py
+
+# Old phase logs (keep PM_LOG.md only)
+PHASE_*_LOG.md
+PHASE_E_COMPLETE.md
+PM_LOG_PHASE7.txt
+
+# Duplicate/old docs
+AGENT_FRAMEWORK_QA.md
+ARCHITECTURE.md
+HEALTHCHECK.md
+INTERVIEW_GUIDE.md
+ROUTING_BUDGET.md
+SYSTEM_DESIGN.md
+
+# Old prod variants
+app.prod.py
+app_prod.py
+
+# State files
+enhanced_state.json
+
+# Logs
+runtime.stderr.log
+runtime.stdout.log
+server_stderr.log
+server_stdout.log
+
+# Egg info
+src/my_agent.egg-info/
