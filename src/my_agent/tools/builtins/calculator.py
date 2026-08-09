@@ -26,6 +26,7 @@ class CalculatorTool(BaseTool):
         "required": ["expression"],
     }
     tags = ["math", "utility"]
+    permission_level = "allow"  # pure computation, no side effects
 
     _ALLOWED_CHARS = set("0123456789+-*/.()^ ")
     _ALLOWED_NODES = (

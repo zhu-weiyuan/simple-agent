@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SimpleAgent · A2A 任务中心</title>
+<style>
+  :root{--bg:#0d1117;--panel:#161b22;--border:#30363d;--text:#e6edf3;--muted:#8b949e;
+        --accent:#3b82f6;--green:#3fb950;--red:#f85149;--amber:#d29922}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+       background:var(--bg);color:var(--text);line-height:1.6}
+  .wrap{max-width:1080px;margin:0 auto;padding:24px}
+  h1{font-size:22px;margin:0 0 4px}
+  h2{font-size:16px;margin:22px 0 10px;border-bottom:1px solid var(--border);padding-bottom:6px}
+  .muted{color:var(--muted);font-size:13px}
+  .err{color:var(--red);font-size:13px}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .grow{flex:1;min-width:140px}
+  input,textarea,select,button{background:#0d1117;color:var(--text);border:1px solid var(--border);
+       border-radius:8px;padding:8px 12px;font-size:14px;font-family:inherit}
+  textarea{min-height:64px;resize:vertical;width:100%}
+  button{cursor:pointer;background:#21262d;transition:background .15s}
+  button:hover{background:#30363d}
+  button[type=submit]{background:var(--accent);color:#fff;border:none}
+  button[type=submit]:hover{opacity:.9}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--muted);font-weight:500;white-space:nowrap}
+  code{background:#21262d;padding:1px 6px;border-radius:4px;font-size:12px;word-break:break-all}
+  .tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px}
+  .tag.ok{background:rgba(63,185,80,.15);color:var(--green)}
+  .tag.warn{background:rgba(210,153,34,.15);color:var(--amber)}
+  .tag.bad{background:rgba(248,81,73,.15);color:var(--red)}
+  .submit-msg{margin-top:10px;font-size:13px}
+  .stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
+  .stat{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;text-align:center}
+  .stat b{display:block;font-size:22px}
+  .stat span{color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🤝 SimpleAgent · A2A 任务中心</h1>
+  <div class="muted">API 根路径：<code>/a2a</code> · 提交消息 · 查询任务状态 · 支持取消、超时与 SQLite 持久化</div>
+
+  <h2>提交新任务</h2>
+  <div class="card">
+    <div class="row" style="margin-bottom:10px">
+      <select id="agentSel" class="grow" style="max-width:200px"></select>
+      <input id="taskIdInput" class="grow" placeholder="taskId（可选，用于幂等 ID）">
+    </div>
+    <textarea id="promptInput" placeholder="输入要发送给 Agent 的消息..."></textarea>
+    <div class="row" style="margin-top:10px">
+      <button id="submitBtn" type="submit">提交任务</button>
+      <button id="refreshBtn" type="button">刷新列表</button>
+    </div>
+    <div class="submit-msg" id="submitMsg"></div>
+  </div>
+
+  <h2>Agent Card</h2>
+  <div class="card" id="cardBox"><div class="muted">加载中...</div></div>
+
+  <h2>A2A 任务</h2>
+  <div class="card" style="overflow-x:auto">
+    <table>
+      <thead><tr><th>taskId</th><th>状态</th><th>Agent</th><th>消息 / 错误</th><th>耗时</th><th>操作</th></tr></thead>
+      <tbody id="taskRows"><tr><td colspan="6" class="muted">加载中...</td></tr></tbody>
+    </table>
+  </div>
+
+  <h2>任务统计</h2>
+  <div class="stat-grid" id="statsBox"></div>
+
+  <div class="muted" style="margin-top:18px">SimpleAgent v2.1 · A2A（Agent-to-Agent）任务管理 · 数据库：<code>runtime/a2a_tasks.db</code></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+async function jget(url){
+  const r = await fetch(url, {cache:'no-store'});
+  if(!r.ok){ const t = await r.text().catch(()=>''); throw new Error(url+' · HTTP '+r.status+' '+(t||'')); }
+  return r.json();
+}
+async function jpost(url, body){
+  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  let d = null; const t = await r.text().catch(()=>'');
+  try{ d = JSON.parse(t); }catch(e){}
+  if(!r.ok) throw new Error(url+' · HTTP '+r.status+' '+(d && d.detail ? d.detail : t));
+  return d;
+}
+const cls = state => (state==='completed'||state==='submitted') ? 'ok' :
+              (state==='working'||state==='cancel_requested') ? 'warn' : 'bad';
+const tag = s => `<span class="tag ${cls(s)}">${s||'未知'}</span>`;
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function loadAgents(){
+  try{
+    const d = await jget('/a2a/agents');
+    $('agentSel').innerHTML = d.agents.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('') || '<option value="local">local</option>';
+  }catch(e){ $('agentSel').innerHTML = '<option value="local">local</option>'; }
+}
+async function loadCard(){
+  try{
+    const d = await jget('/a2a/.well-known/agent.json');
+    $('cardBox').innerHTML =
+      `<div><b>${esc(d.name)}</b> <span class="tag ok">v${esc(d.version)}</span></div>` +
+      `<div class="muted" style="margin-top:4px">${esc(d.description||'')}</div>` +
+      `<div class="muted" style="margin-top:4px">服务地址：<code>${esc(d.url||'')}</code> · 传输协议：${esc(d.preferredTransport||'http')}</div>` +
+      (d.tools && d.tools.length ? `<div class="muted" style="margin-top:4px">可用工具：${d.tools.map(t=>esc(t.name||t)).join(', ')}</div>` : '');
+  }catch(e){ $('cardBox').innerHTML = `<span class="err">Agent Card 加载失败：${esc(e.message)}</span>`; }
+}
+async function loadTasks(){
+  try{
+    const d = await jget('/a2a/tasks?limit=20');
+    const rows = d.tasks||[];
+    $('taskRows').innerHTML = rows.length ? rows.map(t=>`
+      <tr>
+        <td><code>${esc(t.taskId)}</code></td>
+        <td>${tag(t.state)}</td>
+        <td class="muted">${esc(t.agent||'local')}</td>
+        <td>${t.message ? esc(String(t.message.content||'').slice(0,180)) : ''}${t.error ? `<div class="err">${esc(t.error)}</div>` : ''}</td>
+        <td class="muted">${t.duration!=null ? t.duration.toFixed(1)+'s' : '-'}</td>
+        <td>${t.state==='submitted'||t.state==='working'||t.state==='cancel_requested' ? `<button data-cancel="${esc(t.taskId)}">取消</button>` : ''}</td>
+      </tr>`).join('') : '<tr><td colspan="6" class="muted">\u6682\u65e0\u4efb\u52a1</td></tr>';
+    document.querySelectorAll('button[data-cancel]').forEach(b=>b.addEventListener('click', async ()=>{
+      try{ await jpost(`/a2a/tasks/${encodeURIComponent(b.dataset.cancel)}/cancel`, {}); loadTasks(); }
+      catch(e){ alert('取消任务失败：'+e.message); }
+    }));
+  }catch(e){ $('taskRows').innerHTML = `<tr><td colspan="6"><span class="err">任务加载失败：${esc(e.message)}</span></td></tr>`; }
+}
+async function loadStats(){
+  try{
+    const s = await jget('/a2a/stats');
+    const c = s.counters||{};
+    const p = (s.local && s.local.persisted) || {};
+    const persistedTotal = Object.values(p).reduce((sum, value) => sum + Number(value || 0), 0);
+    const count = key => Math.max(Number(c[key] || 0), Number(p[key] || 0));
+    const items = [
+      ['\u5df2\u63d0\u4ea4', Math.max(Number(c.submitted || 0), persistedTotal)],
+      ['\u5df2\u5b8c\u6210', count('completed')], ['\u5931\u8d25', count('failed')],
+      ['\u8d85\u65f6', count('timed_out')], ['\u5df2\u53d6\u6d88', count('cancelled')],
+      ['\u5e42\u7b49\u51b2\u7a81', c.conflicts||0]
+    ];
+    $('statsBox').innerHTML = items.map(i=>`<div class="stat"><b>${i[1]}</b><span>${i[0]}</span></div>`).join('');
+  }catch(e){ $('statsBox').innerHTML = `<span class="err">统计加载失败：${esc(e.message)}</span>`; }
+}
+$('submitBtn').addEventListener('click', async ()=>{
+  const content = $('promptInput').value.trim();
+  if(!content){ $('submitMsg').textContent = '请输入消息内容'; return; }
+  const agent = $('agentSel').value || 'local';
+  const taskId = $('taskIdInput').value.trim() || undefined;
+  $('submitMsg').textContent = '正在提交...';
+  try{
+    const r = await jpost(`/a2a/messages?agent=${encodeURIComponent(agent)}`, {message:content, task_id:taskId});
+    $('submitMsg').innerHTML = `任务已提交：<code>${esc(r.taskId)}</code> · 状态 ${tag(r.state)}，列表将自动刷新`;
+    $('taskIdInput').value = r.taskId;
+    $('promptInput').value = '';
+    loadTasks(); loadStats();
+  }catch(e){ $('submitMsg').innerHTML = `<span class="err">提交失败：${esc(e.message)}</span>`; }
+});
+$('refreshBtn').addEventListener('click', ()=>{ loadTasks(); loadStats(); });
+setInterval(()=>{ loadTasks(); loadStats(); }, 4000);
+loadAgents(); loadCard(); loadTasks(); loadStats();
+</script>
+</body>
+</html>

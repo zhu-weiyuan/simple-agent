@@ -29,6 +29,7 @@ class PowerShellTool(BaseTool):
         "required": ["command"],
     }
     tags = ["system", "shell"]
+    permission_level = "deny"  # arbitrary shell execution requires explicit override
 
     # 危险命令模式（按类别分组）
     _BLOCK_PATTERNS = {

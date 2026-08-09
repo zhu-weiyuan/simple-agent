@@ -82,6 +82,14 @@
     <div class="muted" id="costMeta" style="margin-top:10px"></div>
   </div>
 
+  <div class="panel">
+    <h2>A2A ?? <span class="muted" style="font-weight:400">/a2a</span></h2>
+    <table id="a2aTable"><thead><tr>
+      <th>taskId</th><th>??</th><th>?? / ??</th><th>??</th>
+    </tr></thead><tbody id="a2aRows"></tbody></table>
+    <div class="muted" id="a2aMeta" style="margin-top:10px"></div>
+  </div>
+
   <div class="grid" style="grid-template-columns:1fr 1fr">
     <div class="panel">
       <h2>已注册工具</h2>
@@ -198,6 +206,23 @@ async function tick(){
   try{
     document.getElementById('rawMetrics').textContent = await tget('/api/metrics');
   }catch(e){ document.getElementById('rawMetrics').textContent = '/api/metrics: '+e.message; }
+
+  try{
+    const a = await jget('/a2a/tasks?limit=5');
+    const rows = a.tasks || [];
+    const a2aTag = (s) => `<span class="tag" style="background:var(--border)">${s}</span>`;
+    document.getElementById('a2aRows').innerHTML = rows.length ? rows.map(t=>`
+      <tr><td><code>${t.taskId}</code></td><td>${a2aTag(t.state)}</td>
+        <td style="max-width:300px;word-break:break-all">${t.message?String(t.message.content||'').slice(0,100):''}${t.error?' <span class="err">'+t.error+'</span>':''}</td>
+        <td class="num">${t.duration!=null?t.duration.toFixed(1)+'s':'-'}</td></tr>`).join('')
+      : '<tr><td colspan="4" class="muted">?? A2A ??</td></tr>';
+    try{
+      const st = await jget('/a2a/stats');
+      const c = st.counters||{};
+      document.getElementById('a2aMeta').textContent =
+        `??? ${c.submitted||0} ? ?? ${c.completed||0} ? ?? ${c.failed||0} ? ?? ${c.timed_out||0} ? ?? ${c.cancelled||0}`;
+    }catch(e){ document.getElementById('a2aMeta').textContent='A2A ??????'; }
+  }catch(e){ document.getElementById('a2aMeta').innerHTML=`<span class="err">A2A ??: ${e.message}</span>`; }
 
   document.getElementById('lastUpdate').textContent =
     '更新于 ' + new Date().toLocaleTimeString();

@@ -191,7 +191,6 @@ class SimpleAgent:
         "你是一个教学型 Python Agent，运行在 Windows 系统上。"
         "当可以直接回答时就直接回答；当需要精确外部信息时再调用工具。"
         "你拥有以下能力:"
-        "- execute_powershell: 执行 PowerShell 命令"
         "- read_file: 读取文件内容"
         "- list_files: 列出目录中的文件和文件夹"
         "- calculator: 执行数学计算"

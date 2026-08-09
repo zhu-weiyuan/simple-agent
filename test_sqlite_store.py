@@ -5,6 +5,7 @@ Tests for SQLite conversation store.
 Run: pytest test_sqlite_store.py -v
 """
 import json
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -227,3 +228,138 @@ def test_pagination():
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_legacy_multitenant_schema_provisions_external_session_owner(tmp_path):
+    """Legacy sessions.user_id -> users.id schemas must keep ownership durable."""
+    db_path = tmp_path / "legacy.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            PRAGMA foreign_keys = ON;
+            CREATE TABLE tenants (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO tenants (id, name) VALUES ('default', 'Default tenant');
+            CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                display_name TEXT DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
+                user_id TEXT,
+                title TEXT DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                message_count INTEGER DEFAULT 0,
+                metadata TEXT DEFAULT '{}',
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE RESTRICT,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            );
+            """
+        )
+
+    from my_agent.memory.sqlite_store import SqliteConversationStore
+
+    store = SqliteConversationStore(str(db_path))
+    try:
+        assert store.set_session_user("sess-legacy", "external-user") is True
+        assert store.get_session_info("sess-legacy")["user_id"] == "external-user"
+        assert store.list_user_sessions("external-user")[0]["session_id"] == "sess-legacy"
+    finally:
+        store.close()
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT id FROM users WHERE id = 'external-user'").fetchone()
+
+
+def test_retention_days_none_means_no_expiry():
+    """When retention_days is None, get_expired_sessions returns empty."""
+    from my_agent.memory.sqlite_store import SqliteConversationStore
+
+    store = SqliteConversationStore(":memory:", retention_days=None)
+    try:
+        store.create_session("ret-001")
+        store.add_message("ret-001", "user", "Hello")
+        assert store.get_expired_sessions() == []
+        assert store.purge_expired() == 0
+    finally:
+        store.close()
+
+
+def test_purge_expired_deletes_old_sessions():
+    """Sessions older than retention_days should be purged."""
+    import time
+    from my_agent.memory.sqlite_store import SqliteConversationStore
+
+    store = SqliteConversationStore(":memory:", retention_days=7)
+    try:
+        # Create a session
+        store.create_session("ret-old")
+        store.add_message("ret-old", "user", "Old message")
+
+        # Backdate the session's updated_at to 10 days ago
+        with store._get_conn() as conn:
+            conn.execute(
+                "UPDATE sessions SET updated_at = datetime('now', '-10 days') WHERE id = 'ret-old'"
+            )
+            conn.commit()
+
+        expired = store.get_expired_sessions()
+        assert len(expired) == 1
+        assert expired[0]["session_id"] == "ret-old"
+
+        deleted = store.purge_expired()
+        assert deleted == 1
+        assert store.get_session_info("ret-old") is None
+    finally:
+        store.close()
+
+
+def test_purge_expired_keeps_recent_sessions():
+    """Sessions within retention window should survive purge."""
+    from my_agent.memory.sqlite_store import SqliteConversationStore
+
+    store = SqliteConversationStore(":memory:", retention_days=30)
+    try:
+        store.create_session("ret-new")
+        store.add_message("ret-new", "user", "Recent message")
+
+        expired = store.get_expired_sessions()
+        assert len(expired) == 0
+
+        deleted = store.purge_expired()
+        assert deleted == 0
+        assert store.get_session_info("ret-new") is not None
+    finally:
+        store.close()
+
+
+def test_purge_expired_returns_count():
+    """purge_expired should return the number of deleted sessions."""
+    from my_agent.memory.sqlite_store import SqliteConversationStore
+
+    store = SqliteConversationStore(":memory:", retention_days=1)
+    try:
+        # Create 3 sessions, backdate all
+        for i in range(3):
+            store.create_session(f"purge-{i}")
+            store.add_message(f"purge-{i}", "user", f"Msg {i}")
+
+        with store._get_conn() as conn:
+            conn.execute(
+                "UPDATE sessions SET updated_at = datetime('now', '-5 days')"
+            )
+            conn.commit()
+
+        deleted = store.purge_expired()
+        assert deleted == 3
+        assert store.get_stats()["total_sessions"] == 0
+    finally:
+        store.close()

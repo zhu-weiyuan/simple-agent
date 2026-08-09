@@ -1,5 +1,5 @@
 @echo off
-cd /d C:\Users\Administrator\.openclaw\workspace\simple-agent
+cd /d C:\Users\Administrator\.openclaw\workspace1\simple-agent
 set OPENAI_API_KEY=sk-local
 set OPENAI_BASE_URL=http://localhost:8080/v1
 set OPENAI_MODEL=D:\download\KAT-Coder-V2.5-Dev-APEX-I-Quality.gguf

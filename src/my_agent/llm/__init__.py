@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import random
 import time
@@ -33,6 +34,19 @@ try:
     import httpx  # type: ignore
 except ImportError:  # pragma: no cover
     httpx = None
+
+logger = logging.getLogger(__name__)
+
+try:
+    from ..resilience import CircuitBreaker, CircuitOpenError
+except ImportError:  # pragma: no cover
+    CircuitBreaker = None  # type: ignore[assignment,misc]
+    CircuitOpenError = RuntimeError  # type: ignore[assignment,misc]
+
+try:
+    from ..observability import get_metrics as _get_obs_metrics
+except ImportError:  # pragma: no cover
+    _get_obs_metrics = None  # type: ignore[assignment]
 
 DEFAULT_TIMEOUT = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
 TOTAL_DEADLINE = float(os.getenv("LLM_TOTAL_DEADLINE_SECONDS", "45"))
@@ -66,18 +80,34 @@ def _merge_reasoning(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class LLMClient:
-    """OpenAI 兼容 API 客户端（同步, 基于 requests, 保留兼容）"""
+    """OpenAI 兼容 API 客户端（同步, 基于 requests, 保留兼容）
+
+    Integrates circuit breaker for failure isolation alongside the existing
+    retry-with-backoff and deadline logic.
+    """
 
     def __init__(
         self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
+        circuit_breaker: Optional[Any] = None,
+        metrics: Optional[Any] = None,
     ) -> None:
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "xxx")
         self.base_url = _normalize_base_url(
             base_url or os.getenv("OPENAI_BASE_URL", "http://localhost:8080/v1"))
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        if circuit_breaker is not None:
+            self._circuit_breaker = circuit_breaker
+        elif CircuitBreaker is not None:
+            self._circuit_breaker = CircuitBreaker(
+                failure_threshold=5, recovery_timeout=30.0
+            )
+        else:
+            self._circuit_breaker = None
+        # Observability: optional MetricsCollector for LLM-specific metrics
+        self._metrics = metrics or (_get_obs_metrics() if _get_obs_metrics else None)
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -89,7 +119,17 @@ class LLMClient:
                          stream: bool = False):
         if requests is None:
             raise RuntimeError("requests 未安装,无法使用同步 LLMClient")
-        deadline = time.monotonic() + TOTAL_DEADLINE
+
+        # Circuit breaker gate — fail fast when upstream is known-bad
+        if self._circuit_breaker is not None:
+            if not self._circuit_breaker.allow_request():
+                if self._metrics is not None:
+                    self._metrics.increment_counter(
+                        "llm_circuit_open", {"model": self.model})
+                raise CircuitOpenError("Circuit breaker open for LLM upstream")
+
+        call_start = time.monotonic()
+        deadline = call_start + TOTAL_DEADLINE
         last_exc: Optional[Exception] = None
         for attempt in range(MAX_RETRIES + 1):
             remaining = deadline - time.monotonic()
@@ -102,18 +142,66 @@ class LLMClient:
                 if resp.status_code in (429, 500, 502, 503, 504) \
                         and attempt < MAX_RETRIES:
                     last_exc = RuntimeError(f"HTTP {resp.status_code}")
+                    if self._metrics is not None:
+                        self._metrics.increment_counter(
+                            "llm_retries", {"model": self.model,
+                                            "status": str(resp.status_code)})
+                    logger.warning(
+                        "LLM upstream %d, retrying (attempt %d/%d)",
+                        resp.status_code, attempt + 1, MAX_RETRIES,
+                    )
                     time.sleep(min(_backoff_delay(attempt),
                                    max(0, deadline - time.monotonic())))
                     continue
                 resp.raise_for_status()
+                if self._circuit_breaker is not None:
+                    self._circuit_breaker.record_success()
+                if self._metrics is not None:
+                    elapsed_ms = (time.monotonic() - call_start) * 1000
+                    self._metrics.observe_histogram(
+                        "llm_call_latency", elapsed_ms,
+                        labels={"model": self.model, "status": "success"})
+                    self._metrics.increment_counter(
+                        "llm_calls", {"model": self.model, "status": "success"})
                 return resp
+            except CircuitOpenError:
+                # Circuit breaker rejection must NOT be retried — fail immediately.
+                raise
             except Exception as e:  # noqa: BLE001
                 last_exc = e
+                # Only retry on transient / network errors, not on HTTPError
+                # from non-retryable status codes (400, 401, 403, etc.).
+                _is_http_error = (
+                    requests is not None
+                    and isinstance(e, requests.exceptions.HTTPError)
+                )
+                _retryable_http = (
+                    _is_http_error
+                    and getattr(e, "response", None) is not None
+                    and e.response.status_code in (429, 500, 502, 503, 504)
+                )
+                _is_transient = not _is_http_error or _retryable_http
+                if not _is_transient:
+                    break  # non-retryable — stop immediately
                 if attempt < MAX_RETRIES and time.monotonic() < deadline:
+                    logger.warning(
+                        "LLM call failed (%s), retrying (attempt %d/%d)",
+                        type(e).__name__, attempt + 1, MAX_RETRIES,
+                    )
                     time.sleep(min(_backoff_delay(attempt),
                                    max(0, deadline - time.monotonic())))
                     continue
-                raise
+
+        # All retries exhausted — record failure for circuit breaker
+        if self._circuit_breaker is not None:
+            self._circuit_breaker.record_failure()
+        if self._metrics is not None:
+            elapsed_ms = (time.monotonic() - call_start) * 1000
+            self._metrics.observe_histogram(
+                "llm_call_latency", elapsed_ms,
+                labels={"model": self.model, "status": "error"})
+            self._metrics.increment_counter(
+                "llm_calls", {"model": self.model, "status": "error"})
         raise last_exc or RuntimeError("LLM 请求超出总 deadline")
 
     def chat(
@@ -206,6 +294,8 @@ class AsyncLLMClient:
         base_url: Optional[str] = None,
         model: Optional[str] = None,
         timeout: float = DEFAULT_TIMEOUT,
+        circuit_breaker: Optional[Any] = None,
+        metrics: Optional[Any] = None,
     ) -> None:
         if httpx is None:
             raise RuntimeError("httpx 未安装,无法使用 AsyncLLMClient "
@@ -216,6 +306,15 @@ class AsyncLLMClient:
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         self.timeout = timeout
         self._client: Optional["httpx.AsyncClient"] = None
+        if circuit_breaker is not None:
+            self._circuit_breaker = circuit_breaker
+        elif CircuitBreaker is not None:
+            self._circuit_breaker = CircuitBreaker(
+                failure_threshold=5, recovery_timeout=30.0
+            )
+        else:
+            self._circuit_breaker = None
+        self._metrics = metrics or (_get_obs_metrics() if _get_obs_metrics else None)
 
     def _get_client(self) -> "httpx.AsyncClient":
         if self._client is None or self._client.is_closed:
@@ -258,7 +357,17 @@ class AsyncLLMClient:
         url = f"{self.base_url}/chat/completions"
         payload = self._payload(messages, tools, model=model,
                                 max_tokens=max_tokens, temperature=temperature)
-        deadline = time.monotonic() + TOTAL_DEADLINE
+
+        # Circuit breaker gate
+        if self._circuit_breaker is not None:
+            if not self._circuit_breaker.allow_request():
+                if self._metrics is not None:
+                    self._metrics.increment_counter(
+                        "llm_circuit_open", {"model": self.model})
+                raise CircuitOpenError("Circuit breaker open for LLM upstream")
+
+        call_start = time.monotonic()
+        deadline = call_start + TOTAL_DEADLINE
         last_exc: Optional[Exception] = None
         client = self._get_client()
         for attempt in range(MAX_RETRIES + 1):
@@ -272,19 +381,58 @@ class AsyncLLMClient:
                 if resp.status_code in (429, 500, 502, 503, 504) \
                         and attempt < MAX_RETRIES:
                     last_exc = RuntimeError(f"HTTP {resp.status_code}")
+                    if self._metrics is not None:
+                        self._metrics.increment_counter(
+                            "llm_retries", {"model": self.model,
+                                            "status": str(resp.status_code)})
                     await asyncio.sleep(min(_backoff_delay(attempt),
                                             max(0, deadline - time.monotonic())))
                     continue
                 resp.raise_for_status()
+                if self._circuit_breaker is not None:
+                    self._circuit_breaker.record_success()
+                if self._metrics is not None:
+                    elapsed_ms = (time.monotonic() - call_start) * 1000
+                    self._metrics.observe_histogram(
+                        "llm_call_latency", elapsed_ms,
+                        labels={"model": self.model, "status": "success"})
+                    self._metrics.increment_counter(
+                        "llm_calls", {"model": self.model, "status": "success"})
                 data = _merge_reasoning(resp.json())
                 return self._parse_completion(data)
+            except CircuitOpenError:
+                # Circuit breaker rejection must NOT be retried — fail immediately.
+                raise
             except Exception as e:  # noqa: BLE001
                 last_exc = e
+                # Only retry on transient / network errors, not on HTTPError
+                # from non-retryable status codes (400, 401, 403, etc.).
+                _is_http_error = (
+                    httpx is not None
+                    and isinstance(e, httpx.HTTPStatusError)
+                )
+                _retryable_http = (
+                    _is_http_error
+                    and getattr(e, "response", None) is not None
+                    and e.response.status_code in (429, 500, 502, 503, 504)
+                )
+                _is_transient = not _is_http_error or _retryable_http
+                if not _is_transient:
+                    break  # non-retryable — stop immediately
                 if attempt < MAX_RETRIES and time.monotonic() < deadline:
                     await asyncio.sleep(min(_backoff_delay(attempt),
                                             max(0, deadline - time.monotonic())))
                     continue
                 raise
+        if self._circuit_breaker is not None:
+            self._circuit_breaker.record_failure()
+        if self._metrics is not None:
+            elapsed_ms = (time.monotonic() - call_start) * 1000
+            self._metrics.observe_histogram(
+                "llm_call_latency", elapsed_ms,
+                labels={"model": self.model, "status": "error"})
+            self._metrics.increment_counter(
+                "llm_calls", {"model": self.model, "status": "error"})
         raise last_exc or RuntimeError("LLM 请求超出总 deadline")
 
     @staticmethod

@@ -23,6 +23,7 @@ class HookPoint(Enum):
     LLM_END = "on_llm_end"
     SESSION_COMPACT = "on_session_compact"
     STREAM_CHUNK = "on_stream_chunk"
+    TOOL_PERMISSION_REQUEST = "on_tool_permission_request"
 
 
 @dataclass

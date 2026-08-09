@@ -12,20 +12,33 @@ Tests:
 
 import pytest
 import time
-import sys
 from pathlib import Path
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
 from fastapi.testclient import TestClient
+
+import app_prod
+
+
+@pytest.fixture(autouse=True)
+def healthy_llm_probe(monkeypatch):
+    """Keep endpoint tests deterministic and avoid a real LLM/network call."""
+    async def _stub_llm_check():
+        return {
+            "status": "ok",
+            "required": True,
+            "reachable": True,
+            "latency_ms": 0.1,
+            "base_url": app_prod.sync_llm.base_url,
+            "status_code": 200,
+        }
+
+    monkeypatch.setattr(app_prod, "_check_llm", _stub_llm_check)
 
 
 @pytest.fixture
 def client():
-    """Create test client."""
-    from app import app
-    with TestClient(app) as c:
+    """Create a client for the production FastAPI entrypoint."""
+    with TestClient(app_prod.app) as c:
         yield c
 
 
@@ -131,7 +144,7 @@ class TestReadyEndpoint:
         
         for check_name, check_data in checks.items():
             assert "status" in check_data
-            assert check_data["status"] in ["ok", "error"]
+            assert check_data["status"] in ["ok", "error", "skipped"]
     
     def test_ready_all_checks_pass(self, client):
         """All readiness checks should pass in healthy state."""
@@ -151,6 +164,25 @@ class TestReadyEndpoint:
         if llm_check["status"] == "ok":
             assert "latency_ms" in llm_check
             assert llm_check["latency_ms"] > 0
+
+
+    def test_ready_returns_503_when_required_llm_is_down(self, client, monkeypatch):
+        """Readiness must fail when a required dependency is unavailable."""
+        async def _failed_llm_check():
+            return {
+                "status": "error",
+                "required": True,
+                "reachable": False,
+                "latency_ms": 1.0,
+                "reason": "test outage",
+            }
+
+        monkeypatch.setattr(app_prod, "_check_llm", _failed_llm_check)
+        response = client.get("/api/ready")
+        assert response.status_code == 503
+        data = response.json()
+        assert data["ready"] is False
+        assert data["failing_check"] == "llm"
 
 
 class TestMetricsEndpoint:

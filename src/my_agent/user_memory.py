@@ -119,6 +119,7 @@ class UserMemory:
     expires_at: Optional[float] = None
     idempotency_key: str = ""
     id: Optional[int] = None
+    superseded_at: Optional[float] = None  # 被更新时设置; 非 None 则不参与召回
 
     def to_public(self) -> Dict[str, Any]:
         return {
@@ -128,6 +129,7 @@ class UserMemory:
             "importance": round(self.importance, 3),
             "created_at": self.created_at,
             "expires_at": self.expires_at,
+            "superseded_at": self.superseded_at,
         }
 
 
@@ -192,6 +194,9 @@ def rule_extract(messages: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
 class UserMemoryStore:
     """按 user_id 隔离的长期记忆存储 (SQLite + 内存余弦)。"""
 
+    # 默认相似度阈值: 余弦归一后超过此值视为"同一话题"的更新
+    SUPERSEDE_SIMILARITY_THRESHOLD: float = 0.7
+
     def __init__(
         self,
         db_path: str = "conversations.db",
@@ -229,6 +234,7 @@ class UserMemoryStore:
                     created_at REAL NOT NULL,
                     expires_at REAL,
                     idempotency_key TEXT NOT NULL DEFAULT '',
+                    superseded_at REAL,
                     UNIQUE(user_id, idempotency_key, content)
                 )
                 """
@@ -236,6 +242,11 @@ class UserMemoryStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_mem_uid ON user_memories(user_id)"
             )
+            # 兼容旧表: 补充 superseded_at 列 (幂等)
+            try:
+                conn.execute("ALTER TABLE user_memories ADD COLUMN superseded_at REAL")
+            except sqlite3.OperationalError:
+                pass  # 列已存在
             conn.commit()
 
     # ── embed ────────────────────────────────────────────────
@@ -289,8 +300,69 @@ class UserMemoryStore:
             # (lastrowid 会保留上一次成功的 rowid, 不可靠, 故用 rowcount 判断)。
             if cur.rowcount == 1:
                 mem.id = cur.lastrowid
+                # 冲突检测: 同 kind + 高相似度 → 旧记忆标记为 superseded
+                self._supersede_old(user_id, kind, emb, now, exclude_id=mem.id)
                 return mem
         return None  # 幂等命中, 未新增
+
+    def _supersede_old(
+        self,
+        user_id: str,
+        kind: str,
+        new_embedding: List[float],
+        now: float,
+        exclude_id: Optional[int] = None,
+    ) -> int:
+        """标记同 kind、高相似度的旧记忆为 superseded。返回标记数量。
+
+        仅处理 fact / preference / profile 类型 (lesson 等不限)。
+        阈值: cosine 归一后 > SUPERSEDE_SIMILARITY_THRESHOLD。
+        exclude_id: 刚插入的新记忆 ID, 不参与对比。
+        """
+        if kind not in ("fact", "preference", "profile"):
+            return 0
+        if not new_embedding:
+            return 0
+        superseded = 0
+        with self._conn() as conn:
+            if exclude_id is not None:
+                rows = conn.execute(
+                    """SELECT id, embedding FROM user_memories
+                       WHERE user_id = ? AND kind = ?
+                         AND superseded_at IS NULL
+                         AND id != ?
+                         AND (expires_at IS NULL OR expires_at > ?)""",
+                    (user_id, kind, exclude_id, now),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT id, embedding FROM user_memories
+                       WHERE user_id = ? AND kind = ?
+                         AND superseded_at IS NULL
+                         AND (expires_at IS NULL OR expires_at > ?)""",
+                    (user_id, kind, now),
+                ).fetchall()
+            for row in rows:
+                try:
+                    old_emb = json.loads(row["embedding"])
+                except (ValueError, json.JSONDecodeError):
+                    continue
+                if not old_emb:
+                    continue
+                sim = (cosine(new_embedding, old_emb) + 1.0) / 2.0  # 归一到 0..1
+                if sim > self.SUPERSEDE_SIMILARITY_THRESHOLD:
+                    conn.execute(
+                        "UPDATE user_memories SET superseded_at = ? WHERE id = ?",
+                        (now, row["id"]),
+                    )
+                    superseded += 1
+            conn.commit()
+        if superseded > 0:
+            logger.info(
+                "superseded %d old %s memories for user %s (sim > %.2f)",
+                superseded, kind, user_id, self.SUPERSEDE_SIMILARITY_THRESHOLD,
+            )
+        return superseded
 
     def extract_and_store(
         self,
@@ -370,13 +442,14 @@ class UserMemoryStore:
         min_score: float = 0.0,
         now: Optional[float] = None,
     ) -> List[ScoredMemory]:
-        """score = relevance × importance × decay; user_id 硬过滤; 排除过期/哨兵。"""
+        """score = relevance × importance × decay; user_id 硬过滤; 排除过期/哨兵/已 supersede。"""
         now = now if now is not None else time.time()
         q_emb = self.embed(query) if query else []
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT * FROM user_memories
                    WHERE user_id = ? AND kind != 'sentinel'
+                     AND superseded_at IS NULL
                      AND (expires_at IS NULL OR expires_at > ?)""",
                 (user_id, now),
             ).fetchall()
@@ -425,6 +498,7 @@ class UserMemoryStore:
             kind=row["kind"], importance=row["importance"], embedding=emb,
             created_at=row["created_at"], expires_at=row["expires_at"],
             idempotency_key=row["idempotency_key"],
+            superseded_at=row["superseded_at"] if "superseded_at" in row.keys() else None,
         )
 
     def close(self) -> None:

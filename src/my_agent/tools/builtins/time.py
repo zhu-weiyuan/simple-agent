@@ -20,6 +20,7 @@ class GetTimeTool(BaseTool):
         "properties": {},
     }
     tags = ["utility", "time"]
+    permission_level = "allow"  # pure computation, no side effects
 
     def execute(self, params: Dict[str, Any]) -> str:
         return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")

@@ -57,6 +57,7 @@ class BaseTool(ABC):
             description=self.description,
             parameters=self.parameters,
             tags=self.tags,
+            permission_level=self.permission_level,
         )
 
     def to_openai_schema(self) -> Dict[str, Any]:

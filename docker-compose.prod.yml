@@ -1,4 +1,4 @@
-version: "3.8"
+﻿version: "3.8"
 
 services:
   simple-agent:
@@ -9,7 +9,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # LLM Configuration (no insecure defaults — fail fast if unset)
+      # LLM Configuration (no insecure defaults 鈥?fail fast if unset)
       - OPENAI_API_KEY=${OPENAI_API_KEY:?OPENAI_API_KEY must be set}
       - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://host.docker.internal:8080}
       - OPENAI_MODEL=${OPENAI_MODEL:-qwen3.5}
@@ -28,6 +28,9 @@ services:
       
       # Health Check Configuration
       - HEALTH_CHECK_LLM_TIMEOUT=${HEALTH_CHECK_LLM_TIMEOUT:-3}
+      - REQUIRE_LLM_FOR_READINESS=${REQUIRE_LLM_FOR_READINESS:-true}
+      - IDEMPOTENCY_PENDING_TTL=${IDEMPOTENCY_PENDING_TTL:-300}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       
       # Observability
       - METRICS_ENABLED=${METRICS_ENABLED:-true}
@@ -46,7 +49,7 @@ services:
       - ./checkpoints:/app/checkpoints:rw
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=5)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/ready', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -178,3 +181,4 @@ networks:
     ipam:
       config:
         - subnet: 172.28.0.0/16
+

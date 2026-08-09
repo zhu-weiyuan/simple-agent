@@ -24,12 +24,21 @@ from typing import Any, Dict, List, Optional
 
 
 class SqliteConversationStore:
-    """SQLite-backed conversation history store."""
+    """SQLite-backed conversation history store.
 
-    def __init__(self, db_path: str = "conversations.db") -> None:
+    Args:
+        db_path: SQLite database path. ':memory:' for in-memory.
+        retention_days: If set, sessions older than this many days are
+            eligible for cleanup via ``purge_expired()``.  ``None`` (default)
+            disables automatic expiry — all data is retained indefinitely.
+    """
+
+    def __init__(self, db_path: str = "conversations.db",
+                 retention_days: Optional[int] = None) -> None:
         self.db_path_str = db_path
         self.db_path = Path(db_path) if db_path != ":memory:" else None
         self._persistent_conn: Optional[sqlite3.Connection] = None
+        self.retention_days = retention_days
         
         # For in-memory databases, keep a persistent connection
         if db_path == ":memory:":
@@ -136,6 +145,72 @@ class SqliteConversationStore:
             # 撞唯一约束 → 第二条消息即崩溃 (线上事故)。这里探测一次并缓存。
             mcols = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
             self._has_sequence_no = "sequence_no" in mcols
+
+    def _ensure_session_user_fk_target(
+        self, conn: sqlite3.Connection, user_id: str, tenant_id: str = "default"
+    ) -> None:
+        """Provision an external identity when a legacy DB enforces users(id).
+
+        Some existing installations have a multi-tenant ``sessions`` table with
+        a foreign key from ``sessions.user_id`` to ``users.id``.  The current
+        auth store also supports a simpler ``user_profiles``-only schema, so
+        this is intentionally a no-op unless that legacy foreign key exists.
+        Without this compatibility path, a first request from an external
+        ``X-User-Id``/JWT identity logs a foreign-key warning and loses session
+        ownership even though the chat itself succeeds.
+        """
+        fk_rows = conn.execute("PRAGMA foreign_key_list(sessions)").fetchall()
+        fk = next(
+            (row for row in fk_rows
+             if row[2] == "users" and row[3] == "user_id" and row[4] in {"id", "user_id"}),
+            None,
+        )
+        if fk is None or not user_id:
+            return
+
+        target_column = fk[4]
+        if conn.execute(
+            f"SELECT 1 FROM users WHERE {target_column} = ? LIMIT 1",
+            (user_id,),
+        ).fetchone():
+            return
+
+        table_columns = {row[1]: row for row in conn.execute("PRAGMA table_info(users)")}
+        if "tenant_id" in table_columns:
+            has_tenants = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tenants'"
+            ).fetchone()
+            if has_tenants and not conn.execute(
+                "SELECT 1 FROM tenants WHERE id = ?", (tenant_id,)
+            ).fetchone():
+                conn.execute(
+                    "INSERT INTO tenants (id, name) VALUES (?, ?)",
+                    (tenant_id, tenant_id),
+                )
+
+        values: Dict[str, Any] = {target_column: user_id}
+        for column, value in (
+            ("id", user_id),
+            ("user_id", user_id),
+            ("username", user_id),
+            ("display_name", user_id),
+            ("tenant_id", tenant_id),
+        ):
+            if column in table_columns:
+                values[column] = value
+
+        # Avoid attempting an insert if an installation has an unrelated
+        # required column that cannot be derived safely.
+        for name, row in table_columns.items():
+            if row[3] and row[5] == 0 and row[4] is None and name not in values:
+                return
+
+        names = list(values)
+        placeholders = ", ".join("?" for _ in names)
+        conn.execute(
+            f"INSERT OR IGNORE INTO users ({', '.join(names)}) VALUES ({placeholders})",
+            [values[name] for name in names],
+        )
 
     def _next_seq(self, conn: sqlite3.Connection, session_id: str) -> int:
         """老库带 sequence_no 时, 计算该会话下一个递增序号 (从 0 起)。"""
@@ -295,6 +370,43 @@ class SqliteConversationStore:
             conn.commit()
             return cursor.rowcount > 0
 
+    def get_expired_sessions(self) -> List[Dict[str, Any]]:
+        """Return sessions older than ``retention_days`` (if configured).
+
+        Returns an empty list when ``retention_days`` is ``None``.
+        Each dict contains ``session_id``, ``updated_at``, and ``message_count``.
+        """
+        if self.retention_days is None:
+            return []
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                """SELECT id AS session_id, updated_at, message_count
+                   FROM sessions
+                   WHERE updated_at < datetime('now', ? || ' days')""",
+                (-self.retention_days,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def purge_expired(self) -> int:
+        """Delete sessions older than ``retention_days``.
+
+        Returns the number of sessions deleted.  No-op when
+        ``retention_days`` is ``None``.
+        """
+        if self.retention_days is None:
+            return 0
+        expired = self.get_expired_sessions()
+        if not expired:
+            return 0
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                """DELETE FROM sessions
+                   WHERE updated_at < datetime('now', ? || ' days')""",
+                (-self.retention_days,),
+            )
+            conn.commit()
+            return cursor.rowcount
+
     def search_messages(self, query: str, limit: int = 20) -> List[Dict[str, Any]]:
         """Search messages by content (simple LIKE search)."""
         with self._get_conn() as conn:
@@ -386,6 +498,12 @@ class SqliteConversationStore:
         """Associate a new or unowned session with a user without overwriting ownership."""
         with self._get_conn() as conn:
             conn.execute("INSERT OR IGNORE INTO sessions (id) VALUES (?)", (session_id,))
+            session_row = conn.execute(
+                "SELECT user_id, tenant_id FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            tenant_id = (session_row["tenant_id"] if session_row and "tenant_id" in session_row.keys()
+                         else "default") or "default"
+            self._ensure_session_user_fk_target(conn, user_id, tenant_id)
             row = conn.execute("SELECT user_id FROM sessions WHERE id = ?", (session_id,)).fetchone()
             owner = row["user_id"] if row else None
             if owner and owner != "anonymous" and owner != user_id:

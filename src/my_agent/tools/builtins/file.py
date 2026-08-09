@@ -26,6 +26,7 @@ class ReadFileTool(BaseTool):
         "required": ["path"],
     }
     tags = ["file", "read"]
+    permission_level = "ask"  # filesystem read access requires confirmation
 
     def execute(self, params: Dict[str, Any]) -> str:
         path_str = str(params.get("path", "")).strip()
@@ -67,6 +68,7 @@ class ListFilesTool(BaseTool):
         },
     }
     tags = ["file", "list"]
+    permission_level = "allow"  # directory listing is low-risk
 
     def execute(self, params: Dict[str, Any]) -> str:
         path_str = str(params.get("path", ".")).strip()

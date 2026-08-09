@@ -159,24 +159,24 @@ class TestUserMemory(unittest.TestCase):
 
     def test_decay_scoring(self):
         now = time.time()
-        # 两条内容相同、重要度相同, 只有创建时间不同
-        self.store.add_memory("u", "我在做机器学习项目 A", importance=0.6, idempotency_key="new")
-        # 手动插入一条"旧"记忆
-        old = self.store.add_memory("u", "我在做机器学习项目 B", importance=0.6, idempotency_key="old")
+        # 两条内容不同但同话题、重要度相同, 只有创建时间不同
+        self.store.add_memory("u", "我住在北京", importance=0.6, idempotency_key="new")
+        # 手动插入一条"旧"记忆 (不同 idempotency_key, 不同内容)
+        old = self.store.add_memory("u", "我今天吃了苹果", importance=0.6, idempotency_key="old")
         with self.store._conn() as conn:
             conn.execute(
                 "UPDATE user_memories SET created_at = ? WHERE id = ?",
                 (now - 120 * 86400, old.id),
             )
             conn.commit()
-        hits = self.store.recall("u", "机器学习项目", top_k=5, now=now)
+        hits = self.store.recall("u", "住在哪里", top_k=5, now=now)
         by_content = {h.memory.content: h for h in hits}
-        new_score = by_content["我在做机器学习项目 A"].score
-        old_score = by_content["我在做机器学习项目 B"].score
+        new_score = by_content["我住在北京"].score
+        old_score = by_content["我今天吃了苹果"].score
         # 新记忆 decay 更高 → 分数更高
         self.assertGreater(new_score, old_score)
-        self.assertGreater(by_content["我在做机器学习项目 A"].decay,
-                           by_content["我在做机器学习项目 B"].decay)
+        self.assertGreater(by_content["我住在北京"].decay,
+                           by_content["我今天吃了苹果"].decay)
 
     def test_hypothesis_filter(self):
         self.assertTrue(is_hypothesis("我可能会去上海"))
@@ -205,6 +205,133 @@ class TestUserMemory(unittest.TestCase):
         self.assertEqual(message_range_key("u", msgs), message_range_key("u", msgs))
         self.assertNotEqual(message_range_key("u", msgs),
                             message_range_key("u2", msgs))
+
+
+# ── 冲突检测: supersede 机制 ───────────────────────────────────
+def _topic_embed(text: str) -> list:
+    """测试用 embed: 含"住" → 向量 [1,0,...]; 含"吃" → [0,1,...]; 其他 → [0,0,...]。
+
+    保证同话题向量完全相同 (sim=1.0), 不同话题向量正交 (sim=0.0)。
+    """
+    dim = 8
+    vec = [0.0] * dim
+    t = text.lower()
+    if "住" in t:
+        vec[0] = 1.0
+    elif "吃" in t:
+        vec[1] = 1.0
+    elif "喜欢" in t or "爱好" in t:
+        vec[2] = 1.0
+    elif "叫" in t or "名字" in t:
+        vec[3] = 1.0
+    norm = sum(v * v for v in vec) ** 0.5
+    if norm > 0:
+        vec = [v / norm for v in vec]
+    return vec
+
+
+class TestSupersede(unittest.TestCase):
+    def setUp(self):
+        self.store = UserMemoryStore(":memory:", embed_fn=_topic_embed,
+                                    half_life_days=30.0)
+
+    def test_same_topic_supersedes_old(self):
+        """同 kind + 高相似度 → 旧记忆被 superseded, 不参与召回。"""
+        m1 = self.store.add_memory("u", "我住在北京", kind="fact", importance=0.8)
+        self.assertIsNotNone(m1)
+        # m1 is new; superseded_at is None in returned object
+        # (DB state is updated by _supersede_old but returned object is stale)
+
+        # 再加一条"同话题"记忆
+        m2 = self.store.add_memory("u", "我住在上海", kind="fact", importance=0.9,
+                                   idempotency_key="k2")
+        self.assertIsNotNone(m2)
+
+        # m1 应被 superseded in DB (同 kind + 同话题向量 → sim=1.0 > 0.7)
+        with self.store._conn() as conn:
+            row = conn.execute("SELECT superseded_at FROM user_memories WHERE id = ?",
+                               (m1.id,)).fetchone()
+        self.assertIsNotNone(row["superseded_at"])
+
+        # recall 不应返回 superseded 的记忆
+        hits = self.store.recall("u", "住在哪里", top_k=5)
+        contents = [h.memory.content for h in hits]
+        self.assertIn("我住在上海", contents)
+        self.assertNotIn("我住在北京", contents)
+
+    def test_different_kind_not_superseded(self):
+        """不同 kind 不触发 supersede。"""
+        self.store.add_memory("u", "我住在北京", kind="fact")
+        self.store.add_memory("u", "我喜欢住在这里", kind="preference",
+                               idempotency_key="k2")
+        # fact 和 preference 不互相 supersede
+        with self.store._conn() as conn:
+            row = conn.execute(
+                "SELECT superseded_at FROM user_memories WHERE kind = 'fact'").fetchone()
+        self.assertIsNone(row["superseded_at"])
+
+    def test_low_similarity_not_superseded(self):
+        """低相似度不触发 supersede。"""
+        self.store.add_memory("u", "我住在北京", kind="fact")
+        self.store.add_memory("u", "我今天吃了苹果", kind="fact",
+                               idempotency_key="k2")
+        # 低相似度: 不触发 supersede
+        with self.store._conn() as conn:
+            rows = conn.execute(
+                "SELECT superseded_at FROM user_memories WHERE kind = 'fact'").fetchall()
+        for row in rows:
+            self.assertIsNone(row["superseded_at"])
+
+    def test_already_superseded_not_superseded_again(self):
+        """已 superseded 的记忆不再被处理。"""
+        m1 = self.store.add_memory("u", "我住在北京", kind="fact")
+        # 手动标记为 superseded
+        with self.store._conn() as conn:
+            conn.execute("UPDATE user_memories SET superseded_at = ? WHERE id = ?",
+                         (100.0, m1.id))
+            conn.commit()
+        # 再加一条, 不应报错
+        m2 = self.store.add_memory("u", "我住在上海", kind="fact",
+                                   idempotency_key="k2")
+        self.assertIsNotNone(m2)
+
+    def test_list_memories_includes_superseded(self):
+        """list_memories 仍包含 superseded 条目 (审计用途)。"""
+        m1 = self.store.add_memory("u", "我住在北京", kind="fact")
+        m2 = self.store.add_memory("u", "我今天吃了苹果", kind="fact",
+                                   idempotency_key="k2")
+        # 手动标记 m2 为 superseded
+        with self.store._conn() as conn:
+            conn.execute("UPDATE user_memories SET superseded_at = ? WHERE id = ?",
+                         (300.0, m2.id))
+            conn.commit()
+        all_mems = self.store.list_memories("u")
+        self.assertEqual(len(all_mems), 2)
+        superseded = [m for m in all_mems if m.get("superseded_at") is not None]
+        self.assertEqual(len(superseded), 1)
+
+    def test_backward_compat_old_table_without_superseded_at(self):
+        """旧表 (无 superseded_at 列) 自动补充列。"""
+        # _ensure_table 已在 setUp 中运行, 验证列存在
+        with self.store._conn() as conn:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(user_memories)").fetchall()}
+        self.assertIn("superseded_at", cols)
+
+    def test_recall_excludes_superseded(self):
+        """recall 排除 superseded 条目。"""
+        m1 = self.store.add_memory("u", "我住在北京", kind="fact")
+        m2 = self.store.add_memory("u", "我今天吃了苹果", kind="fact",
+                                   idempotency_key="k2")
+        # 手动标记 m2 为 superseded
+        with self.store._conn() as conn:
+            conn.execute("UPDATE user_memories SET superseded_at = ? WHERE id = ?",
+                         (200.0, m2.id))
+            conn.commit()
+        # recall 应返回 m1 (住), 不返回 m2 (superseded)
+        hits = self.store.recall("u", "住在哪里", top_k=5)
+        contents = [h.memory.content for h in hits]
+        self.assertIn("我住在北京", contents)
+        self.assertNotIn("我今天吃了苹果", contents)
 
 
 # ── 系统提示词不泄漏 ─────────────────────────────────────────

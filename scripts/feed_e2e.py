@@ -2,7 +2,7 @@
 """Start simple-agent with DeepSeek, feed E2E data for observability"""
 import subprocess, os, sys, time, json, urllib.request, urllib.error
 
-BASE = r'C:\Users\Administrator\.openclaw\workspace\simple-agent'
+BASE = r'C:\Users\Administrator\.openclaw\workspace1\simple-agent'
 os.chdir(BASE)
 
 # DeepSeek config

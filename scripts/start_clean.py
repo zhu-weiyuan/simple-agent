@@ -2,7 +2,7 @@
 """Start simple-agent with local llama.cpp"""
 import subprocess, os, sys, time
 
-BASE = r'C:\Users\Administrator\.openclaw\workspace\simple-agent'
+BASE = r'C:\Users\Administrator\.openclaw\workspace1\simple-agent'
 os.chdir(BASE)
 
 env = os.environ.copy()

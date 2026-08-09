@@ -35,6 +35,11 @@ from ..gateway import BudgetExceededError, BudgetPolicy, BudgetStatus
 from .hooks import HookPoint, HookRegistry
 from .context_assembler import estimate_tokens, fit_messages_to_budget
 
+try:
+    import jsonschema as _jsonschema
+except ImportError:  # pragma: no cover
+    _jsonschema = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -679,7 +684,36 @@ class QueryEngine:
             error_msg = f"错误:未知工具:{tc.name}"
             self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
             return error_msg
+
+        # ── permission gate (async mirror of _execute_tool) ─────
+        definition = self.tool_registry.get_definition(tc.name)
+        perm_level = getattr(definition, "permission_level", "allow") if definition else "allow"
+        if perm_level == "deny":
+            error_msg = f"工具被拒绝(权限级别: deny): {tc.name}"
+            logger.warning("Tool %s blocked by permission_level=deny (async)", tc.name)
+            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
+            return error_msg
+        if perm_level == "ask":
+            perm_results = self.hooks.fire(
+                HookPoint.TOOL_PERMISSION_REQUEST,
+                data={**_hdata, "permission_level": perm_level},
+            )
+            for _key, val in perm_results.items():
+                if isinstance(val, dict) and val.get("allowed") is False:
+                    reason = val.get("reason", "权限被拒绝")
+                    error_msg = f"工具被用户拒绝: {tc.name} — {reason}"
+                    logger.info("Tool %s denied by permission hook (async): %s", tc.name, reason)
+                    self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
+                    return error_msg
+
         params = tc.arguments if isinstance(tc.arguments, dict) else {}
+        # ── schema validation (defense-in-depth) ─────────────
+        validation_err = self._validate_tool_args(tc.name, params, definition)
+        if validation_err:
+            logger.warning("Tool %s args failed schema validation (async): %s",
+                           tc.name, validation_err)
+            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": validation_err})
+            return validation_err
         try:
             async with semaphore:
                 if asyncio.iscoroutinefunction(handler):
@@ -849,6 +883,38 @@ class QueryEngine:
                 return msg.content or ""
         return ""
 
+    # ── tool argument validation ─────────────────────────────
+
+    @staticmethod
+    def _validate_tool_args(
+        tool_name: str,
+        params: dict,
+        definition: Optional[Any],
+    ) -> Optional[str]:
+        """Validate tool call arguments against the tool's JSON schema.
+
+        Returns None when valid, or an error message string when invalid.
+        Uses jsonschema if available; gracefully degrades to no-op when
+        the library is not installed.
+        """
+        if _jsonschema is None or definition is None:
+            return None
+        schema = getattr(definition, "parameters", None)
+        if not schema or not isinstance(schema, dict):
+            return None
+        try:
+            _jsonschema.validate(instance=params, schema=schema)
+            return None
+        except _jsonschema.ValidationError as exc:
+            # Pick the most useful short message
+            loc = ".".join(str(p) for p in exc.absolute_path) if exc.absolute_path else "(root)"
+            return (
+                f"参数验证失败 [{tool_name}]: {exc.message}"
+                f" (字段: {loc}, 期望: {exc.schema.get('type', '?')})"
+            )
+        except Exception:  # pragma: no cover
+            return None  # don't block on unexpected validation errors
+
     # ── tool execution (sync) ────────────────────────────────
 
     def _execute_tool(self, tc: ToolCall) -> str:
@@ -859,8 +925,38 @@ class QueryEngine:
             error_msg = f"错误:未知工具:{tc.name}"
             self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
             return error_msg
+
+        # ── permission gate ─────────────────────────────────
+        definition = self.tool_registry.get_definition(tc.name)
+        perm_level = getattr(definition, "permission_level", "allow") if definition else "allow"
+        if perm_level == "deny":
+            error_msg = f"工具被拒绝(权限级别: deny): {tc.name}"
+            logger.warning("Tool %s blocked by permission_level=deny", tc.name)
+            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
+            return error_msg
+        if perm_level == "ask":
+            perm_results = self.hooks.fire(
+                HookPoint.TOOL_PERMISSION_REQUEST,
+                data={**_hdata, "permission_level": perm_level},
+            )
+            # Any hook handler returning {"allowed": false} blocks execution
+            for _key, val in perm_results.items():
+                if isinstance(val, dict) and val.get("allowed") is False:
+                    reason = val.get("reason", "权限被拒绝")
+                    error_msg = f"工具被用户拒绝: {tc.name} — {reason}"
+                    logger.info("Tool %s denied by permission hook: %s", tc.name, reason)
+                    self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
+                    return error_msg
+
         try:
             params = tc.arguments if isinstance(tc.arguments, dict) else {}
+            # ── schema validation (defense-in-depth) ─────────
+            validation_err = self._validate_tool_args(tc.name, params, definition)
+            if validation_err:
+                logger.warning("Tool %s args failed schema validation: %s",
+                               tc.name, validation_err)
+                self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": validation_err})
+                return validation_err
             result = handler(params)
             self.hooks.fire(HookPoint.TOOL_CALL_AFTER, data={**_hdata, "result": result})
             return result

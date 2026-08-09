@@ -84,6 +84,7 @@ class ToolRegistry:
         description: str = "",
         parameters: Optional[Dict[str, Any]] = None,
         tags: Optional[List[str]] = None,
+        permission_level: str = "ask",
     ) -> None:
         """直接添加工具"""
         self._tools[name] = ToolDefinition(
@@ -92,6 +93,7 @@ class ToolRegistry:
             parameters=parameters or {"type": "object", "properties": {}},
             handler=handler,
             tags=tags or [],
+            permission_level=permission_level,
         )
 
     def get_handler(self, name: str) -> Optional[Callable[[Dict[str, Any]], str]]:
