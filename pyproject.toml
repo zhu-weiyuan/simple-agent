@@ -25,7 +25,7 @@ package-dir = {"" = "src"}
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = [".", "test"]
+testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
