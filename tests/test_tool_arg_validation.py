@@ -12,24 +12,27 @@ from my_agent.tools.registry import ToolRegistry, ToolDefinition
 
 # ── helpers ──────────────────────────────────────────────────
 
-def _make_definition(name="test_tool", parameters="_SENTINEL"):
+_DEFAULT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string", "description": "file path"},
+        "count": {"type": "integer", "description": "item count"},
+    },
+    "required": ["path"],
+}
+_NO_SCHEMA = object()  # distinct sentinel for "no schema at all"
+
+
+def _make_definition(name="test_tool", parameters=_NO_SCHEMA):
     """Create a ToolDefinition with an optional JSON schema.
 
     Pass parameters=None (explicit) to create a definition with no schema.
-    Omit or use _SENTINEL to get the default test schema.
+    Omit or use _NO_SCHEMA to get the default test schema.
     """
-    _SENTINEL = object()
     defn = MagicMock(spec=ToolDefinition)
     defn.name = name
-    if parameters is _SENTINEL:
-        defn.parameters = {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "file path"},
-                "count": {"type": "integer", "description": "item count"},
-            },
-            "required": ["path"],
-        }
+    if parameters is _NO_SCHEMA:
+        defn.parameters = _DEFAULT_SCHEMA
     else:
         defn.parameters = parameters
     defn.permission_level = "allow"

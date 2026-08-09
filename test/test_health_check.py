@@ -22,6 +22,11 @@ import app_prod
 @pytest.fixture(autouse=True)
 def healthy_llm_probe(monkeypatch):
     """Keep endpoint tests deterministic and avoid a real LLM/network call."""
+    # CI has no OPENAI_* env vars; without these the config check makes
+    # /api/ready fail on "config" instead of exercising the LLM probe.
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-for-health-check")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.test/v1")
+
     async def _stub_llm_check():
         return {
             "status": "ok",

@@ -69,7 +69,7 @@ SYSTEM_DESIGN.md
 
 # Old prod variants
 app.prod.py
-app_prod.py
+# app_prod.py is the canonical production entrypoint and is tracked (tests depend on it)
 
 # State files
 enhanced_state.json

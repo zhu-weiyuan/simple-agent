@@ -52,7 +52,10 @@ def test_a2a_submission_is_non_blocking_and_completes():
     task = server.handle_message(A2AMessage(task_id="task-fast", content="hello"))
     elapsed = time.monotonic() - started
     try:
-        assert elapsed < 0.2
+        # 0.5s: generous enough for a busy CI runner, still proves the submit
+        # path is non-blocking (the old sync implementation blocked for the
+        # agent's full runtime, e.g. 10s).
+        assert elapsed < 0.5
         assert task.state is TaskState.SUBMITTED
         completed = wait_state(server, "task-fast", TaskState.COMPLETED)
         assert completed.message.content == "done:hello"

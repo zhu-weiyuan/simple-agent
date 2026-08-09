@@ -130,7 +130,7 @@ class TaskStore:
             if state:
                 sql += " AND state = ?"
                 params.append(state)
-            sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            sql += " ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?"
             params.extend([max(0, int(limit)), max(0, int(offset))])
             conn = self._connect()
             try:
@@ -173,7 +173,7 @@ class TaskStore:
                     """DELETE FROM a2a_tasks WHERE task_id IN (
                         SELECT task_id FROM a2a_tasks
                         WHERE state NOT IN ('submitted','working','cancel_requested')
-                        ORDER BY created_at DESC LIMIT -1 OFFSET ?
+                        ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?
                     )""", (keep,),
                 ).rowcount
                 conn.commit()
