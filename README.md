@@ -1,4 +1,4 @@
-# SimpleAgent
+﻿# SimpleAgent
 
 一个从零实现的轻量级 AI Agent 框架，参考 Claude Code 和 OpenClaw 架构设计，用于深入理解 Agent 系统的核心原理。
 
@@ -64,7 +64,7 @@ cp .env.example .env
 
 ```bash
 my-agent              # CLI 模式
-python app.py         # Web 模式 (默认端口 8000)
+python app_prod.py         # Web 模式 (默认端口 8000)
 ```
 
 ## 📁 项目结构
@@ -87,7 +87,7 @@ simple-agent/
 ├── web/                 # Web UI (暗色主题)
 ├── examples/            # 示例应用
 │   └── code_review/     # AI 代码审查助手
-├── app.py               # Web 服务器 (FastAPI)
+├── app_prod.py           # Web 服务器 (FastAPI)
 ├── pyproject.toml
 └── README.md
 ```

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 A1/A2 Request Governance & Structured Observability Tests
 
@@ -18,11 +18,13 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+os.environ["DEV_AUTH_BYPASS"] = "0"
+os.environ["API_KEYS"] = os.environ.get("API_KEYS", "test-key")
 
 
 def _get_app():
     """Import and return the FastAPI app instance."""
-    from app import app
+    from app_prod import app
     return app
 
 

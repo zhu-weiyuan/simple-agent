@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Integration tests for SimpleAgent API endpoints.
 
@@ -17,11 +17,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # Force-set these before any module imports
 os.environ["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY", "test-key")
 os.environ["API_KEYS"] = "***,test-key,integration-test"
+os.environ["DEV_AUTH_BYPASS"] = "0"  # app_prod honors .env; force auth on
 
 
 def _get_app():
     """Import and return the FastAPI app instance."""
-    from app import app
+    from app_prod import app
     return app
 
 
@@ -146,7 +147,7 @@ def test_memory_stats():
     from fastapi.testclient import TestClient
     app = _get_app()
     with TestClient(app) as client:
-        resp = client.get("/api/memory/stats", headers=AUTH_HEADERS)
+        resp = client.get("/api/memories", headers=AUTH_HEADERS)
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, dict)

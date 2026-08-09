@@ -1,0 +1,48 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# VCS
+.git/
+.gitignore
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Runtime data
+*.db
+*.db-shm
+*.db-wal
+*.log
+/runtime/
+/checkpoints/
+/conversations.db
+/prompts.db
+/enhanced_state.json
+runtime.sessions.json
+
+# Test / scratch
+tests/
+test/
+benchmarks/
+*.coverage
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
