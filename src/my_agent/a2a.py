@@ -120,6 +120,25 @@ class TaskStore:
         except sqlite3.Error as exc:
             logger.warning("Could not persist A2A task %s: %s", task_id, exc)
 
+    def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch one task by primary key. O(1) index lookup."""
+        if not self._db_available:
+            return None
+        try:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT payload FROM a2a_tasks WHERE task_id = ?", (task_id,)
+                ).fetchone()
+            finally:
+                conn.close()
+            if row is None:
+                return None
+            return json.loads(row[0])
+        except (sqlite3.Error, ValueError, TypeError) as exc:
+            logger.warning("Could not read A2A task %s: %s", task_id, exc)
+            return None
+
     def list_tasks(self, state: Optional[str] = None, limit: int = 50,
                    offset: int = 0) -> List[Dict[str, Any]]:
         if not self._db_available:
@@ -341,10 +360,11 @@ class A2AClient:
     """
 
     def __init__(self, endpoint: str, timeout: float = 5.0,
-                 poll_interval: float = 1.0):
+                 poll_interval: float = 1.0, task_timeout: float = 60.0):
         self.endpoint = endpoint.rstrip("/")
-        self.timeout = max(0.1, float(timeout))
+        self.timeout = max(0.1, float(timeout))  # per-HTTP-request transport timeout
         self.poll_interval = max(0.05, float(poll_interval))
+        self.task_timeout = max(0.1, float(task_timeout))  # default wait_for_task deadline
         self._card: Optional[AgentCard] = None
 
     @staticmethod
@@ -434,7 +454,7 @@ class A2AClient:
 
     def wait_for_task(self, task_id: str, timeout: Optional[float] = None) -> TaskStatus:
         """Poll a submitted task until it reaches a terminal state."""
-        deadline = time.monotonic() + (float(timeout) if timeout is not None else self.timeout)
+        deadline = time.monotonic() + (float(timeout) if timeout is not None else self.task_timeout)
         terminal = {
             TaskState.COMPLETED, TaskState.FAILED,
             TaskState.CANCELLED, TaskState.TIMED_OUT,
@@ -511,6 +531,12 @@ class A2AServer:
         self._agent_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="a2a-agent")
         self._http_server: Optional[ThreadingHTTPServer] = None
         self._running = False
+        # Observability: HTTP request volume + queue depth
+        # _obs_lock protects _http_requests/_http_errors from concurrent
+        # ThreadingHTTPServer handler threads (data-race safe, not just GIL-safe).
+        self._obs_lock = threading.Lock()
+        self._http_requests = 0
+        self._http_errors = 0
 
     def get_card(self) -> str:
         return self.card.to_json()
@@ -730,14 +756,9 @@ class A2AServer:
             if task:
                 return copy.deepcopy(task)
         # Fall back to durable history so tasks survive process restarts.
-        try:
-            rows = self.store.list_tasks(limit=1, offset=0)
-        except Exception:  # noqa: BLE001
-            rows = []
-        # list_tasks has no id filter; scan a small page for the id.
-        for row in self.store.list_tasks(limit=500, offset=0):
-            if row.get("taskId") == task_id:
-                return TaskStatus.from_dict(row)
+        row = self.store.get_task(task_id)
+        if row is not None:
+            return TaskStatus.from_dict(row)
         return None
 
     def list_tasks(self, state: Optional[str] = None, limit: int = 50,
@@ -754,15 +775,41 @@ class A2AServer:
         items.sort(key=lambda i: i.get("startedAt", 0.0), reverse=True)
         return items[offset:offset + limit]
 
+    def _inc_http_counter(self, attr: str) -> None:
+        """Thread-safe increment of an HTTP observability counter."""
+        with self._obs_lock:
+            setattr(self, attr, getattr(self, attr) + 1)
+
     def stats(self) -> Dict[str, Any]:
         persisted = self.store.stats()
+        with self._lock:
+            non_terminal = sum(
+                1 for t in self._tasks.values()
+                if t.state not in {
+                    TaskState.COMPLETED, TaskState.FAILED,
+                    TaskState.CANCELLED, TaskState.TIMED_OUT,
+                }
+            )
+            active = sum(1 for f in self._futures.values() if not f.done())
+        with self._obs_lock:
+            http_requests = self._http_requests
+            http_errors = self._http_errors
+        base: Dict[str, Any] = {
+            "in_memory": len(self._tasks),
+            "queue_depth": non_terminal,
+            "active_workers": active,
+            "http_requests": http_requests,
+            "http_errors": http_errors,
+        }
         if persisted:
-            return {"persisted": persisted, "in_memory": len(self._tasks)}
+            base["persisted"] = persisted
+            return base
         with self._lock:
             counts: Dict[str, int] = {}
             for task in self._tasks.values():
                 counts[task.state.value] = counts.get(task.state.value, 0) + 1
-            return {"in_memory": len(self._tasks), "by_state": counts}
+            base["by_state"] = counts
+            return base
 
     def cancel_task(self, task_id: str) -> bool:
         cancelled_before_execution = False
@@ -881,6 +928,9 @@ class A2AServer:
                 self._respond(404, json.dumps({"error": "Not found"}))
 
             def _respond(self, status: int, body: str) -> None:
+                server_instance._inc_http_counter("_http_requests")
+                if status >= 400:
+                    server_instance._inc_http_counter("_http_errors")
                 encoded = body.encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
