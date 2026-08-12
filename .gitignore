@@ -82,3 +82,8 @@ server_stdout.log
 
 # Egg info
 src/my_agent.egg-info/
+
+# Preserved local diagnostic evidence; README indexes remain visible.
+archive/runtime-artifacts/**
+!archive/runtime-artifacts/**/
+!archive/runtime-artifacts/**/README.md

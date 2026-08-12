@@ -94,6 +94,15 @@ const cls = state => (state==='completed'||state==='submitted') ? 'ok' :
               (state==='working'||state==='cancel_requested') ? 'warn' : 'bad';
 const tag = s => `<span class="tag ${cls(s)}">${s||'未知'}</span>`;
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function resultText(task){
+  const content = task && task.message && task.message.content;
+  if(content == null) return '';
+  if(typeof content !== 'string') return JSON.stringify(content);
+  // Older task records stored the engine result as a Python-dict-like string.
+  // Prefer its user-facing content field instead of internal usage metadata.
+  const match = content.match(/(?:^|[,{]\s*)['"]content['"]\s*:\s*['"]([\s\S]*?)['"](?:\s*,|\s*})/);
+  return (match ? match[1] : content).replace(/\\n/g, '\n');
+}
 
 async function loadAgents(){
   try{
@@ -120,7 +129,7 @@ async function loadTasks(){
         <td><code>${esc(t.taskId)}</code></td>
         <td>${tag(t.state)}</td>
         <td class="muted">${esc(t.agent||'local')}</td>
-        <td>${t.message ? esc(String(t.message.content||'').slice(0,180)) : ''}${t.error ? `<div class="err">${esc(t.error)}</div>` : ''}</td>
+        <td>${esc(resultText(t).slice(0,180))}${t.error ? `<div class="err">${esc(t.error)}</div>` : ''}</td>
         <td class="muted">${t.duration!=null ? t.duration.toFixed(1)+'s' : '-'}</td>
         <td>${t.state==='submitted'||t.state==='working'||t.state==='cancel_requested' ? `<button data-cancel="${esc(t.taskId)}">取消</button>` : ''}</td>
       </tr>`).join('') : '<tr><td colspan="6" class="muted">\u6682\u65e0\u4efb\u52a1</td></tr>';
@@ -161,7 +170,8 @@ $('submitBtn').addEventListener('click', async ()=>{
   }catch(e){ $('submitMsg').innerHTML = `<span class="err">提交失败：${esc(e.message)}</span>`; }
 });
 $('refreshBtn').addEventListener('click', ()=>{ loadTasks(); loadStats(); });
-setInterval(()=>{ loadTasks(); loadStats(); }, 4000);
+// Avoid needless polling when the page is hidden.
+setInterval(()=>{ if(!document.hidden){ loadTasks(); loadStats(); } }, 4000);
 loadAgents(); loadCard(); loadTasks(); loadStats();
 </script>
 </body>

@@ -47,7 +47,7 @@ def wait_state(server, task_id, expected, timeout=2):
 
 
 def test_a2a_submission_is_non_blocking_and_completes():
-    server = A2AServer(FastAsyncAgent(), card(), task_timeout=1)
+    server = A2AServer(FastAsyncAgent(), card(), task_timeout=1, db_path=":memory:")
     started = time.monotonic()
     task = server.handle_message(A2AMessage(task_id="task-fast", content="hello"))
     elapsed = time.monotonic() - started
@@ -64,7 +64,7 @@ def test_a2a_submission_is_non_blocking_and_completes():
 
 
 def test_a2a_task_id_is_idempotent_and_conflict_is_rejected():
-    server = A2AServer(FastSyncAgent(), card(), task_timeout=1)
+    server = A2AServer(FastSyncAgent(), card(), task_timeout=1, db_path=":memory:")
     try:
         first = server.handle_message(A2AMessage(task_id="same", content="one"))
         replay = server.handle_message(A2AMessage(task_id="same", content="one"))
@@ -77,7 +77,7 @@ def test_a2a_task_id_is_idempotent_and_conflict_is_rejected():
 
 
 def test_a2a_timeout_marks_task_without_waiting_forever():
-    server = A2AServer(SlowAsyncAgent(), card(), task_timeout=0.05)
+    server = A2AServer(SlowAsyncAgent(), card(), task_timeout=0.05, db_path=":memory:")
     try:
         server.handle_message(A2AMessage(task_id="task-timeout", content="hello"))
         timed_out = wait_state(server, "task-timeout", TaskState.TIMED_OUT)
@@ -87,7 +87,7 @@ def test_a2a_timeout_marks_task_without_waiting_forever():
 
 
 def test_a2a_cancel_stops_async_agent():
-    server = A2AServer(SlowAsyncAgent(), card(), task_timeout=5)
+    server = A2AServer(SlowAsyncAgent(), card(), task_timeout=5, db_path=":memory:")
     try:
         server.handle_message(A2AMessage(task_id="task-cancel", content="hello"))
         deadline = time.monotonic() + 1
@@ -105,7 +105,7 @@ def test_a2a_cancel_stops_async_agent():
 
 
 def test_a2a_http_submission_returns_before_agent_finishes():
-    server = A2AServer(FastAsyncAgent(), card(), host="127.0.0.1", port=0, task_timeout=1)
+    server = A2AServer(FastAsyncAgent(), card(), host="127.0.0.1", port=0, task_timeout=1, db_path=":memory:")
     thread = threading.Thread(target=server.start, daemon=True)
     thread.start()
     try:

@@ -83,9 +83,9 @@
   </div>
 
   <div class="panel">
-    <h2>A2A ?? <span class="muted" style="font-weight:400">/a2a</span></h2>
+    <h2>A2A 任务 <span class="muted" style="font-weight:400">/a2a</span></h2>
     <table id="a2aTable"><thead><tr>
-      <th>taskId</th><th>??</th><th>?? / ??</th><th>??</th>
+      <th>taskId</th><th>状态</th><th>消息 / 错误</th><th>耗时</th>
     </tr></thead><tbody id="a2aRows"></tbody></table>
     <div class="muted" id="a2aMeta" style="margin-top:10px"></div>
   </div>
@@ -123,6 +123,14 @@ async function tget(url){
 }
 function fmt(n){ return (n==null?'–':Number(n).toLocaleString()); }
 function money(n,cur){ return (n==null?'–':(cur||'¥')+Number(n).toFixed(4)); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>\"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c])); }
+function resultText(task){
+  const content = task && task.message && task.message.content;
+  if(content == null) return '';
+  if(typeof content !== 'string') return JSON.stringify(content);
+  const match = content.match(/(?:^|[,{]\s*)['"]content['"]\s*:\s*['"]([\s\S]*?)['"](?:\s*,|\s*})/);
+  return (match ? match[1] : content).replace(/\\n/g, '\n');
+}
 
 function kpi(title,val,sub){
   return `<div class="card"><h3>${title}</h3><div class="val">${val}</div>
@@ -210,19 +218,22 @@ async function tick(){
   try{
     const a = await jget('/a2a/tasks?limit=5');
     const rows = a.tasks || [];
-    const a2aTag = (s) => `<span class="tag" style="background:var(--border)">${s}</span>`;
+    const a2aTag = (s) => `<span class="tag" style="background:var(--border)">${esc(s)}</span>`;
     document.getElementById('a2aRows').innerHTML = rows.length ? rows.map(t=>`
-      <tr><td><code>${t.taskId}</code></td><td>${a2aTag(t.state)}</td>
-        <td style="max-width:300px;word-break:break-all">${t.message?String(t.message.content||'').slice(0,100):''}${t.error?' <span class="err">'+t.error+'</span>':''}</td>
+      <tr><td><code>${esc(t.taskId)}</code></td><td>${a2aTag(t.state)}</td>
+        <td style="max-width:300px;word-break:break-all">${esc(resultText(t).slice(0,100))}${t.error?' <span class="err">'+esc(t.error)+'</span>':''}</td>
         <td class="num">${t.duration!=null?t.duration.toFixed(1)+'s':'-'}</td></tr>`).join('')
-      : '<tr><td colspan="4" class="muted">?? A2A ??</td></tr>';
+      : '<tr><td colspan="4" class="muted">暂无 A2A 任务</td></tr>';
     try{
       const st = await jget('/a2a/stats');
       const c = st.counters||{};
+      const p = (st.local && st.local.persisted) || {};
+      const persistedTotal = Object.values(p).reduce((sum, value) => sum + Number(value || 0), 0);
+      const count = key => Math.max(Number(c[key] || 0), Number(p[key] || 0));
       document.getElementById('a2aMeta').textContent =
-        `??? ${c.submitted||0} ? ?? ${c.completed||0} ? ?? ${c.failed||0} ? ?? ${c.timed_out||0} ? ?? ${c.cancelled||0}`;
-    }catch(e){ document.getElementById('a2aMeta').textContent='A2A ??????'; }
-  }catch(e){ document.getElementById('a2aMeta').innerHTML=`<span class="err">A2A ??: ${e.message}</span>`; }
+        `\u5df2\u63d0\u4ea4 ${Math.max(Number(c.submitted || 0), persistedTotal)} \u00b7 \u5df2\u5b8c\u6210 ${count('completed')} \u00b7 \u5931\u8d25 ${count('failed')} \u00b7 \u8d85\u65f6 ${count('timed_out')} \u00b7 \u5df2\u53d6\u6d88 ${count('cancelled')}`;
+    }catch(e){ document.getElementById('a2aMeta').textContent='A2A 统计暂不可用'; }
+  }catch(e){ document.getElementById('a2aMeta').innerHTML=`<span class="err">A2A 加载失败：${e.message}</span>`; }
 
   document.getElementById('lastUpdate').textContent =
     '更新于 ' + new Date().toLocaleTimeString();

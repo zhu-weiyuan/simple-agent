@@ -71,7 +71,7 @@ def test_query_router():
             print(f"  ✅ 通过:{expected_tier.value} 策略正确")
     
     print(f"\n查询复杂度分类器测试: {'✅ 通过' if all_passed else '❌ 失败'}")
-    return all_passed
+    assert all_passed
 
 
 def test_persona_memory():
@@ -117,10 +117,10 @@ def test_persona_memory():
     # Verify that we got some facts
     if not facts:
         print("❌ 错误:没有提取到任何事实")
-        return False
+        pytest.fail("test assertion failed")
     
     print("✅ Persona 记忆提取测试通过")
-    return True
+    assert True
 
 
 def test_hallucination_detector():
@@ -164,7 +164,7 @@ def test_hallucination_detector():
             print(f"  ✅ 通过:检测结果正确")
     
     print(f"\n幻觉检测测试: {'✅ 通过' if all_passed else '❌ 失败'}")
-    return all_passed
+    assert all_passed
 
 
 def test_deterministic_citation():
@@ -205,7 +205,7 @@ def test_deterministic_citation():
             print(f"  ✅ 通过:检测结果正确")
     
     print(f"\n确定性引用测试: {'✅ 通过' if all_passed else '❌ 失败'}")
-    return all_passed
+    assert all_passed
 
 
 def test_multi_index_retrieval():
@@ -265,7 +265,7 @@ def test_multi_index_retrieval():
             print("  ✅ 通过:返回了结果")
     
     print(f"\n多索引混合检索测试: {'✅ 通过' if all_passed else '❌ 失败'}")
-    return all_passed
+    assert all_passed
 
 
 @pytest.mark.asyncio
@@ -303,10 +303,10 @@ async def test_streaming_output():
     # Verify we got expected events
     if not chunks or not tool_events or not error_events:
         print("❌ 错误:没有收到预期的事件")
-        return False
+        pytest.fail("test assertion failed")
     
     print("✅ 流式输出测试通过")
-    return True
+    assert True
 
 
 def main():

@@ -53,6 +53,39 @@ def test_task_store_persists_and_recovers_terminated_tasks():
             server.stop()
 
 
+def test_idempotency_survives_restart_and_conflict_is_preserved():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "a2a.db")
+        first = A2AServer(FastAsyncAgent(), card(), task_timeout=1, db_path=db)
+        try:
+            first.handle_message(A2AMessage(task_id="restart-idem", content="hello"))
+            wait_state(first, "restart-idem", TaskState.COMPLETED)
+        finally:
+            first.stop()
+
+        second = A2AServer(FastAsyncAgent(), card(), task_timeout=1, db_path=db)
+        try:
+            replay = second.handle_message(A2AMessage(task_id="restart-idem", content="hello"))
+            assert replay.state is TaskState.COMPLETED
+            assert replay.message.content == "done:hello"
+            with pytest.raises(Exception, match="different content"):
+                second.handle_message(A2AMessage(task_id="restart-idem", content="different"))
+        finally:
+            second.stop()
+
+
+def test_memory_store_is_shared_across_its_short_lived_connections():
+    server = A2AServer(FastAsyncAgent(), card(), task_timeout=1, db_path=":memory:")
+    try:
+        server.handle_message(A2AMessage(task_id="memory-persist", content="hello"))
+        wait_state(server, "memory-persist", TaskState.COMPLETED)
+        restored = server.store.get_task("memory-persist")
+        assert restored is not None
+        assert restored["state"] == TaskState.COMPLETED.value
+    finally:
+        server.stop()
+
+
 def test_task_store_marks_inflight_as_timed_out_after_restart():
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "a2a.db")
@@ -158,5 +191,66 @@ def test_llm_error_result_is_failed_not_completed():
         failed = wait_state(server, "llm-error-result", TaskState.FAILED)
         assert failed.error == "HTTP 400"
         assert failed.message.content == "LLM request failed"
+    finally:
+        server.stop()
+
+
+def test_legacy_llm_error_record_is_repaired_to_failed():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "a2a.db")
+        import json
+        payload = {
+            "taskId": "legacy-llm-error",
+            "state": "completed",
+            "message": {
+                "messageId": "m1",
+                "taskId": "legacy-llm-error",
+                "type": "result",
+                "content": str({
+                    "content": "LLM ??????????????",
+                    "stop_reason": "llm_error",
+                    "stop_detail": "HTTP 400",
+                }),
+                "metadata": {},
+            },
+            "startedAt": time.time() - 1,
+            "completedAt": time.time(),
+            "metadata": {},
+            "error": None,
+        }
+        import sqlite3
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE a2a_tasks (task_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, payload TEXT NOT NULL, state TEXT NOT NULL, created_at REAL NOT NULL, updated_at REAL NOT NULL)")
+        con.execute("INSERT INTO a2a_tasks VALUES (?, ?, ?, ?, ?, ?)", (
+            "legacy-llm-error", "fingerprint", json.dumps(payload, ensure_ascii=False),
+            "completed", payload["startedAt"], time.time(),
+        ))
+        con.commit(); con.close()
+
+        server = A2AServer(FastAsyncAgent(), card(), task_timeout=1, db_path=db)
+        try:
+            restored = server.get_task("legacy-llm-error")
+            assert restored is not None
+            assert restored.state is TaskState.FAILED
+            assert restored.error == "HTTP 400"
+            listed = server.list_tasks(limit=10)
+            assert listed[0]["state"] == TaskState.FAILED.value
+            assert server.store.stats()[TaskState.FAILED.value] == 1
+        finally:
+            server.stop()
+
+
+class BudgetStopAgent:
+    async def arun(self, content):
+        return {"content": "???", "stop_reason": "budget_exceeded", "stop_detail": "????"}
+
+
+def test_non_completed_engine_stop_reason_is_failed():
+    server = A2AServer(BudgetStopAgent(), card(), task_timeout=1, db_path=":memory:")
+    try:
+        server.handle_message(A2AMessage(task_id="budget-stop", content="hello"))
+        failed = wait_state(server, "budget-stop", TaskState.FAILED)
+        assert failed.error == "????"
+        assert failed.message.content == "???"
     finally:
         server.stop()
