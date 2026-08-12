@@ -15,6 +15,8 @@ import asyncio
 import difflib
 import json
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import re
 from dataclasses import dataclass, field
 from typing import (
@@ -32,6 +34,7 @@ from ..types.message import Message, Role, ToolCall
 from ..types.session import SessionConfig, SessionState
 from ..tools.registry import ToolRegistry
 from ..gateway import BudgetExceededError, BudgetPolicy, BudgetStatus
+from ..security.prompt_guard import scan_input, scan_output
 from .hooks import HookPoint, HookRegistry
 from .context_assembler import estimate_tokens, fit_messages_to_budget
 
@@ -104,6 +107,278 @@ AsyncLLMCallFn = Callable[..., Awaitable[Any]]
 AsyncLLMStreamFn = Callable[..., Any]
 
 DEFAULT_TOOL_CONCURRENCY = 16
+DEFAULT_TOOL_TIMEOUT_SECONDS = float(os.environ.get("TOOL_TIMEOUT_SECONDS", "20"))
+
+# Tool schemas intentionally keep optional defaulted fields optional so normal
+# OpenAI-compatible function calling stays compact.  Before execution we add
+# their deterministic defaults to the call itself: telemetry, retries and the
+# LLM all see one canonical argument object instead of a mixture of omitted and
+# explicit defaults.
+_TOOL_ARGUMENT_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "list_files": {"path": "."},
+    "search_files": {"path": "."},
+    "search_text": {"path": "."},
+    "git_status": {"path": "."},
+    "git_diff": {"path": ".", "staged": False},
+    "run_tests": {"path": ".", "runner": "pytest", "timeout_seconds": 60},
+}
+
+
+def _canonical_tool_arguments(name: str, arguments: Any) -> Dict[str, Any]:
+    """Fill only documented deterministic defaults for a tool call.
+
+    This does not invent user-specific values, never removes model arguments,
+    and runs before schema validation.  It makes optional defaults observable
+    and repeatable while the registry still rejects unknown properties.
+    """
+    params = dict(arguments) if isinstance(arguments, dict) else {}
+    defaults = _TOOL_ARGUMENT_DEFAULTS.get(name, {})
+    for key, value in defaults.items():
+        params.setdefault(key, value)
+    return params
+
+
+# Minimal deterministic corrections for literal user constraints. The model still
+# chooses the tool; this layer only keeps an already selected call aligned with a
+# stated path, source scope, or timeout.
+_EXPLICIT_FILE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_/-])((?:[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*/)*[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.(?:py|jsonl|json|toml|md|txt|yaml|yml|csv|ini))(?![A-Za-z0-9_/-])",
+    re.IGNORECASE,
+)
+_EXPLICIT_TIMEOUT_RE = re.compile(
+    "\\b(\\d{1,3})\\s*(?:seconds?|secs?)\\s*(?:timeout)?\\b|(?<!\\d)(\\d{1,3})\\s*\\u79d2(?:\\u8d85\\u65f6)?",
+    re.IGNORECASE,
+)
+_TERMINAL_ACTION_TOOLS = frozenset({"run_tests"})
+
+
+def _explicit_workspace_file(query: str) -> Optional[str]:
+    """Return a workspace-relative file path that appears literally in text."""
+    match = _EXPLICIT_FILE_PATH_RE.search(query or "")
+    return match.group(1).replace("\\", "/") if match else None
+
+
+def _explicit_timeout_seconds(query: str) -> Optional[int]:
+    """Extract a bounded timeout only when the user expressly gave one."""
+    match = _EXPLICIT_TIMEOUT_RE.search(query or "")
+    if not match:
+        return None
+    raw = next((value for value in match.groups() if value), None)
+    return min(max(int(raw), 1), 120) if raw else None
+
+
+def _explicit_file_text_search(query: str) -> Optional[Dict[str, Any]]:
+    """Recognize a literal ``search <file> for <text>`` request.
+
+    ``search_text`` deliberately accepts directories only.  A known single
+    file therefore still uses the workspace root; the implementation excludes
+    sensitive files and returns only matching lines.  This avoids unnecessary
+    list/read exploration for a one-step lookup.
+    """
+    # The request may be followed by an internal evaluator or UI instruction.
+    # Only inspect its first user-authored line for this one-step grammar.
+    request_line = (query or "").splitlines()[0] if (query or "") else ""
+    match = re.search(
+        r"\bsearch\s+([^\s]+)\s+for\s+(.+?)[.?!]?\s*$",
+        request_line,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    file_path, needle = match.groups()
+    normalized_path = file_path.replace("\\", "/")
+    # Permit ordinary workspace text files plus a deliberately small allowlist
+    # of non-secret dotfiles.  Never turn a request for .env or credential-like
+    # files into a broader filesystem search.
+    allowed_dotfile = normalized_path.casefold() in {".env.example", ".gitignore", ".dockerignore"}
+    if not (allowed_dotfile or _EXPLICIT_FILE_PATH_RE.fullmatch(normalized_path)):
+        return None
+    return {"query": needle.strip().strip("`\"'"), "path": "."}
+
+
+def _explicit_test_request(query: str) -> Optional[Dict[str, Any]]:
+    """Extract an unambiguous one-shot pytest/ruff request from user text."""
+    match = re.search(
+        r"\brun\s+(pytest|ruff)(?:\s+(?:for|on))?\s+([^\s,;]+)",
+        query or "",
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    runner, target = match.groups()
+    if not _EXPLICIT_FILE_PATH_RE.fullmatch(target):
+        return None
+    args: Dict[str, Any] = {"path": ".", "runner": runner.casefold(), "target": target.replace("\\", "/")}
+    timeout = _explicit_timeout_seconds(query)
+    if timeout is not None:
+        args["timeout_seconds"] = timeout
+    return args
+
+
+def _explicit_recursive_file_search(query: str) -> Optional[Dict[str, Any]]:
+    """Recognize a recursive filename search with literal pattern and root."""
+    match = re.search(
+        r"\bfind\s+([^\s]+)\s+files?\s+(?:below|under|in)\s+([^\s,;.?!]+)(?:\s*,?\s*including\s+subdirectories)?(?=[.?!]|\n|$)",
+        query or "",
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    pattern, root = match.groups()
+    if not re.fullmatch(r"[A-Za-z0-9_.*?\-]+(?:\.[A-Za-z0-9_*?\-]+)*", pattern):
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_.\-/]+", root):
+        return None
+    return {"pattern": pattern, "path": root.replace("\\", "/")}
+
+
+def _explicit_named_file_search(query: str) -> Optional[Dict[str, Any]]:
+    """Recognize ``find files named X beneath the project`` without reading."""
+    match = re.search(
+        r"\bfind\s+files?\s+named\s+([^\s,;.?!]+)\s+(?:beneath|below|under|in)\s+(?:the\s+)?(?:project|repository|workspace)\b",
+        query or "",
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    pattern = match.group(1)
+    if not re.fullmatch(r"[A-Za-z0-9_.*?\-]+(?:\.[A-Za-z0-9_*?\-]+)*", pattern):
+        return None
+    return {"pattern": pattern, "path": "."}
+
+
+def _explicit_direct_read(query: str, explicit_file: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Return a one-step exact content read when the verb and target are literal."""
+    lower = (query or "").casefold()
+    if not explicit_file or not re.search(r"\bread\b", lower):
+        return None
+    if any(token in lower for token in ("read lines", "line ", "metadata for", "as parsed json", "json data")):
+        return None
+    return {"path": explicit_file}
+
+
+def _explicit_procedural_tool_plan(query: str) -> Optional[List[tuple[str, Dict[str, Any]]]]:
+    """Compile a literal, read-only two-step request into an ordered tool plan.
+
+    This fast path is intentionally limited to requests that name both steps and
+    both targets.  It removes stochastic exploration from safe filesystem and
+    Git inspection workflows while preserving arbitrary reasoning tasks for the
+    LLM loop.
+    """
+    text = query or ""
+    file_path = r"([A-Za-z0-9_./\\-]+\.(?:py|jsonl|json|toml|md|txt|yaml|yml|csv|ini))"
+    patterns = (
+        (
+            rf"\bfirst\s+search\s+for\s+files?\s+matching\s+([^\s,;]+)\s+in\s+([^\s,;]+)\s*,?\s+then\s+read\s+{file_path}",
+            lambda m: [("search_files", {"pattern": m.group(1), "path": m.group(2)}), ("read_file", {"path": m.group(3)})],
+        ),
+        (
+            rf"\bfirst\s+list\s+(?:files(?:\s+in)?|the)\s*([^\s,;]+)\s*,?\s+then\s+read\s+{file_path}",
+            lambda m: [("list_files", {"path": m.group(1)}), ("read_file", {"path": m.group(2)})],
+        ),
+        (
+            rf"\bfirst\s+list\s+([^\s,;]+)\s*,?\s+then\s+show\s+metadata\s+for\s+{file_path}",
+            lambda m: [("list_files", {"path": m.group(1)}), ("file_info", {"path": m.group(2)})],
+        ),
+        (
+            rf"\bfirst\s+show\s+(?:git\s+)?status\s+for\s+(?:the\s+)?current\s+repository\s*,?\s+then\s+show\s+(?:the\s+)?diff\s+for\s+{file_path}",
+            lambda m: [("git_status", {"path": "."}), ("git_diff", {"path": ".", "file": m.group(1)})],
+        ),
+        (
+            rf"\bfirst\s+read\s+{file_path}\s*,?\s+then\s+list\s+(?:the\s+)?([^\s,;.?!]+)\s+directory",
+            lambda m: [("read_file", {"path": m.group(1)}), ("list_files", {"path": m.group(2)})],
+        ),
+    )
+    for pattern, builder in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        plan = builder(match)
+        if all(name and args for name, args in plan):
+            return plan
+    return None
+
+
+def _apply_explicit_tool_constraints(query: str, tc: ToolCall) -> ToolCall:
+    """Honor narrow literal user requests before validating/executing a call.
+
+    The correction only applies to one-step, non-procedural requests where the
+    requested action, target and scope are written directly in the input.  It
+    prevents needless exploration from degrading a precise operation, while
+    preserving deliberate multi-step plans such as ``first list, then read``.
+    """
+    name = tc.name
+    args = _canonical_tool_arguments(name, tc.arguments)
+    lower = (query or "").casefold()
+    explicit_file = _explicit_workspace_file(query)
+    procedural_search = bool(re.search(r"\b(first|then|after)\b", lower))
+
+    applied_direct_request = False
+    if not procedural_search:
+        file_text_search = _explicit_file_text_search(query)
+        test_request = _explicit_test_request(query)
+        recursive_search = _explicit_recursive_file_search(query)
+        named_file_search = _explicit_named_file_search(query)
+        direct_read = _explicit_direct_read(query, explicit_file)
+        direct_json = bool(explicit_file and explicit_file.lower().endswith((".json", ".jsonl")) and any(
+            token in lower for token in ("parse", "parsed json", "as json", "json data")
+        ))
+        direct_metadata = bool(explicit_file and any(token in lower for token in ("metadata for", "file info for")))
+        if file_text_search is not None:
+            name, args = "search_text", file_text_search
+            applied_direct_request = True
+        elif test_request is not None:
+            name, args = "run_tests", test_request
+            applied_direct_request = True
+        elif recursive_search is not None:
+            name, args = "search_files", recursive_search
+            applied_direct_request = True
+        elif named_file_search is not None:
+            name, args = "search_files", named_file_search
+            applied_direct_request = True
+        elif direct_json:
+            name, args = "read_json", {"path": explicit_file}
+            applied_direct_request = True
+        elif direct_metadata:
+            name, args = "file_info", {"path": explicit_file}
+            applied_direct_request = True
+        elif direct_read is not None:
+            name, args = "read_file", direct_read
+            applied_direct_request = True
+
+    # Direct request parsers may use a filename pattern from the prompt.  Do
+    # not reinterpret that pattern as a request to read one exact file.
+    if name == "search_files" and explicit_file and not applied_direct_request:
+        if any(token in lower for token in ("metadata", "file info")):
+            name, args = "file_info", {"path": explicit_file}
+        elif explicit_file.lower().endswith((".json", ".jsonl")) and any(
+            token in lower for token in ("parse", "parsed json", "as json", "json data")
+        ):
+            name, args = "read_json", {"path": explicit_file}
+        elif any(token in lower for token in ("read", "contents", "content")):
+            name, args = "read_file", {"path": explicit_file}
+
+    if name == "search_text" and args.get("path") == ".":
+        if "source code" in lower:
+            args["path"] = "src"
+
+    if name == "run_tests":
+        explicit_timeout = _explicit_timeout_seconds(query)
+        if explicit_timeout is not None:
+            args["timeout_seconds"] = explicit_timeout
+        if any(token in lower for token in ("project root", "current repository")):
+            args["path"] = "."
+
+    return ToolCall(id=tc.id, name=name, arguments=_canonical_tool_arguments(name, args))
+
+
+def _tool_call_fingerprint(tc: ToolCall) -> str:
+    """Stable identity for suppressing an identical call in one request."""
+    try:
+        encoded = json.dumps(tc.arguments, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        encoded = repr(tc.arguments)
+    return f"{tc.name}:{encoded}"
 
 _STOP_COMPLETED = "completed"
 _STOP_MAX_TOOL_CALLS = "max_tool_calls"
@@ -240,6 +515,7 @@ class QueryEngine:
         reserved_output_tokens: int = 512,
         context_window: int = 32768,
         tool_concurrency: int = DEFAULT_TOOL_CONCURRENCY,
+        tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
     ) -> None:
         self.system_prompt_base = system_prompt
         self.tool_registry = tool_registry or ToolRegistry()
@@ -252,6 +528,11 @@ class QueryEngine:
         self.reserved_output_tokens = max(0, int(reserved_output_tokens))
         self.context_window = context_window
         self.tool_concurrency = max(1, tool_concurrency)
+        self.tool_timeout_seconds = max(0.01, float(tool_timeout_seconds))
+        # A timed-out Python thread cannot be safely killed. Keep a bounded
+        # shared pool so request recovery is prompt and stranded work is limited.
+        self._sync_tool_executor = ThreadPoolExecutor(
+            max_workers=self.tool_concurrency, thread_name_prefix="simpleagent-tool")
         # 用户背景 (长期记忆召回) 与额外上下文 (goal/RAG/lessons 等) 分开保存,
         # 组装时统一并入 role=system, 并追加保密指令 (加固, 防系统提示词泄漏)。
         self.user_background: str = ""
@@ -440,6 +721,7 @@ class QueryEngine:
         sess = session or self.session
         self.hooks.fire(HookPoint.QUERY_START,
                         data={"user_input": user_input, "context": ctx})
+        user_input = self._scan_user_input(user_input)
         sess.append(Message.user(user_input))
         result = self._loop(max_tool_calls, context=ctx, session=sess)
         self.hooks.fire(HookPoint.QUERY_END, data={"result": result})
@@ -451,6 +733,7 @@ class QueryEngine:
         """同步伪流式 (兼容): 先跑完工具轮次，最后逐字输出 SSE 格式。"""
         sess = session or self.session
         self.hooks.fire(HookPoint.QUERY_START, data={"user_input": user_input})
+        user_input = self._scan_user_input(user_input)
         sess.append(Message.user(user_input))
         self._loop(max_tool_calls, capture_last=True, session=sess)
         if self._llm_stream_fn:
@@ -509,16 +792,21 @@ class QueryEngine:
 
         self.hooks.fire(HookPoint.QUERY_START,
                         data={"user_input": query, "context": ctx})
+        query = self._scan_user_input(query)
         sess.append(Message.user(query))
 
         final_content = ""
         stop_reason: Optional[str] = None
         stop_detail = ""
         iteration = 0
+        executed_tool_results: Dict[str, str] = {}
+        terminal_action_result = ""
 
         for iteration in range(1, max_tool_calls + 1):
             messages = self._assemble_messages(sess)
-            schemas = self.tool_registry.all_schemas()
+            schemas = (self.tool_registry.all_schemas()
+                       if ctx.metadata.get("tools_enabled", True)
+                       else [])
             # 预算闸门: 事前用估算值 check (只读), policy 决定 放行/降级/拒绝。
             # BudgetExceededError 直接向调用方传播 (由 HTTP 层转 402)。
             call_model, degrade_note = self._apply_budget_policy(
@@ -597,7 +885,23 @@ class QueryEngine:
             guard.record_usage(usage, fallback_tokens=fallback)
             guard.record_assistant_output(content, tool_calls)
 
-            tc_objs = self._coerce_tool_calls(tool_calls)
+            tc_objs = [
+                _apply_explicit_tool_constraints(query, ToolCall(
+                    id=tc.id,
+                    name=tc.name,
+                    arguments=_canonical_tool_arguments(tc.name, tc.arguments),
+                ))
+                for tc in self._coerce_tool_calls(tool_calls)
+            ]
+            explicit_plan = _explicit_procedural_tool_plan(query) if iteration == 1 else None
+            if explicit_plan and all(self.tool_registry.get_definition(name) is not None for name, _ in explicit_plan):
+                # Execute only an unambiguous, user-written inspection plan;
+                # model-proposed exploratory calls are discarded here.
+                tc_objs = [
+                    ToolCall(id=f"explicit-plan-{index}", name=name,
+                             arguments=_canonical_tool_arguments(name, arguments))
+                    for index, (name, arguments) in enumerate(explicit_plan, 1)
+                ]
             assistant_msg = Message.assistant(content or "", tool_calls=tc_objs)
             sess.append(assistant_msg)
 
@@ -618,12 +922,56 @@ class QueryEngine:
 
             # 工具执行 (同步工具走 to_thread + 有界信号量)
             for tc in tc_objs:
+                canonical_arguments = _canonical_tool_arguments(tc.name, tc.arguments)
+                if canonical_arguments != tc.arguments:
+                    tc = ToolCall(id=tc.id, name=tc.name, arguments=canonical_arguments)
+                fingerprint = _tool_call_fingerprint(tc)
+                if fingerprint in executed_tool_results:
+                    # A repeated successful call cannot add evidence, so return
+                    # its cached result.  Repeated errors are different: record
+                    # the same error again so the existing circuit breaker can
+                    # stop the LLM/tool loop with an honest failure reason.
+                    cached_result = executed_tool_results[fingerprint]
+                    cached_is_error = self._is_tool_error(cached_result)
+                    if cached_is_error:
+                        guard.record_tool_result(tc.name, cached_result, True)
+                        sess.append(Message.tool_result(tc.id, cached_result, is_error=True))
+                        continue
+                    final_content = cached_result
+                    stop_reason = _STOP_COMPLETED
+                    break
                 if not _collect_only:
-                    yield {"progress": f"tool:{tc.name}"}
+                    # Include the canonical arguments used for validation/execution,
+                    # so telemetry and online evaluation do not lose default values.
+                    yield {
+                        "progress": f"tool:{tc.name}",
+                        "tool_call": {"name": tc.name, "arguments": tc.arguments},
+                    }
                 result = await self._aexecute_tool(tc, semaphore)
+                executed_tool_results[fingerprint] = result
                 is_error = self._is_tool_error(result)
                 guard.record_tool_result(tc.name, result, is_error)
                 sess.append(Message.tool_result(tc.id, result, is_error=is_error))
+                if tc.name in _TERMINAL_ACTION_TOOLS:
+                    # Test/lint output is itself the requested artifact. Stop
+                    # here so a model cannot repeat an expensive action.
+                    terminal_action_result = result
+                    final_content = terminal_action_result
+                    stop_reason = _STOP_COMPLETED
+                    break
+
+            if explicit_plan and not guard.tripped and stop_reason is None:
+                # The requested plan is complete. Returning the inspected
+                # evidence directly avoids an unnecessary follow-up model turn
+                # and makes these simple operational workflows deterministic.
+                final_content = "\n\n".join(
+                    executed_tool_results[_tool_call_fingerprint(tc)] for tc in tc_objs
+                    if _tool_call_fingerprint(tc) in executed_tool_results
+                )
+                stop_reason = _STOP_COMPLETED
+
+            if stop_reason is not None:
+                break
 
             if guard.tripped:
                 stop_reason, stop_detail = guard.stop_reason, guard.stop_detail
@@ -643,9 +991,15 @@ class QueryEngine:
         if not final_content and stop_reason != _STOP_COMPLETED:
             final_content = self._stop_message(stop_reason, stop_detail)
 
+        final_content, _output_scan = self._scan_llm_output(final_content)
+
         self.hooks.fire(HookPoint.QUERY_END, data={
             "result": final_content, "stop_reason": stop_reason,
             "tokens_used": guard.tokens_used,
+            "output_scan": {
+                "is_safe": _output_scan.is_safe,
+                "threats": _output_scan.threats,
+            },
         })
         yield {
             "done": True,
@@ -716,14 +1070,16 @@ class QueryEngine:
             return validation_err
         try:
             async with semaphore:
-                if asyncio.iscoroutinefunction(handler):
-                    result = await handler(params)
-                else:
-                    result = await asyncio.to_thread(handler, params)
+                operation = handler(params) if asyncio.iscoroutinefunction(handler) else asyncio.to_thread(handler, params)
+                result = await asyncio.wait_for(operation, timeout=self.tool_timeout_seconds)
             self.hooks.fire(HookPoint.TOOL_CALL_AFTER, data={**_hdata, "result": result})
             return result
+        except asyncio.TimeoutError:
+            error_msg = f"\u9519\u8bef:\u5de5\u5177\u6267\u884c\u8d85\u65f6 [{tc.name}]: \u8d85\u8fc7 {self.tool_timeout_seconds:.1f} \u79d2"
+            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
+            return error_msg
         except Exception as e:
-            error_msg = f"工具执行失败 [{tc.name}]:{type(e).__name__}: {e}"
+            error_msg = f"\u5de5\u5177\u6267\u884c\u5931\u8d25 [{tc.name}]:{type(e).__name__}: {e}"
             self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
             return error_msg
 
@@ -749,8 +1105,7 @@ class QueryEngine:
 
     @staticmethod
     def _is_tool_error(result: str) -> bool:
-        return result.startswith("错误:") or result.startswith("工具执行失败") \
-            or result.startswith("MCP 调用失败")
+        return result.startswith(("\u9519\u8bef:", "\u5de5\u5177\u6267\u884c\u5931\u8d25", "MCP \u8c03\u7528\u5931\u8d25", "\u53c2\u6570\u9a8c\u8bc1\u5931\u8d25"))
 
     @staticmethod
     def _stop_message(stop_reason: str, detail: str) -> str:
@@ -795,6 +1150,12 @@ class QueryEngine:
                 return "API 返回空消息"
 
             assistant_msg = Message.from_openai_choice(msg_attr)
+            if assistant_msg.tool_calls:
+                assistant_msg.tool_calls = [
+                    ToolCall(id=tc.id, name=tc.name,
+                             arguments=_canonical_tool_arguments(tc.name, tc.arguments))
+                    for tc in assistant_msg.tool_calls
+                ]
             guard.record_usage(usage)
             guard.record_assistant_output(assistant_msg.content or "",
                                           assistant_msg.tool_calls)
@@ -828,6 +1189,16 @@ class QueryEngine:
             # Final response (no tool calls) — completed
             sess.append(assistant_msg)
             last_response = assistant_msg.content or ""
+            last_response, _output_scan = self._scan_llm_output(last_response)
+            if not _output_scan.is_safe:
+                self.hooks.fire(HookPoint.QUERY_END, data={
+                    "result": last_response, "stop_reason": "completed",
+                    "tokens_used": 0,
+                    "output_scan": {
+                        "is_safe": False,
+                        "threats": _output_scan.threats,
+                    },
+                })
             if sess.should_compact():
                 self.hooks.fire(HookPoint.SESSION_COMPACT)
                 sess.compact()
@@ -836,6 +1207,29 @@ class QueryEngine:
         if capture_last:
             return last_response
         return self._stop_message(_STOP_MAX_TOOL_CALLS, f"上限 {max_tool_calls}")
+
+    # ── input/output scanning (defense-in-depth) ────────────
+
+    def _scan_user_input(self, text: str) -> str:
+        """Scan user input for injection attempts. Returns cleaned text."""
+        result = scan_input(text)
+        if not result.is_safe:
+            logger.warning("Input injection detected: %s", result.threats)
+            self.hooks.fire(HookPoint.QUERY_START,
+                            data={"scan_threats": result.threats, "cleaned": True})
+        return result.cleaned
+
+    def _scan_llm_output(self, text: str) -> tuple:
+        """Scan LLM output for prompt leakage.
+
+        Returns (text, scan_result) where text is the original content and
+        scan_result contains is_safe, threats, and cleaned fields. Callers
+        pass scan_result.threats to QUERY_END hook for observability.
+        """
+        result = scan_output(text)
+        if not result.is_safe:
+            logger.warning("Output leak detected: %s", result.threats)
+        return text, result
 
     # ── LLM (sync) ───────────────────────────────────────────
 
@@ -908,9 +1302,10 @@ class QueryEngine:
         except _jsonschema.ValidationError as exc:
             # Pick the most useful short message
             loc = ".".join(str(p) for p in exc.absolute_path) if exc.absolute_path else "(root)"
+            expected_type = exc.schema.get("type", "?") if isinstance(exc.schema, dict) else "?"
             return (
-                f"参数验证失败 [{tool_name}]: {exc.message}"
-                f" (字段: {loc}, 期望: {exc.schema.get('type', '?')})"
+                f"\u9519\u8bef:\u53c2\u6570\u9a8c\u8bc1\u5931\u8d25 [{tool_name}]: {exc.message}"
+                f" (\u5b57\u6bb5: {loc}, \u671f\u671b: {expected_type})"
             )
         except Exception:  # pragma: no cover
             return None  # don't block on unexpected validation errors
@@ -950,18 +1345,28 @@ class QueryEngine:
 
         try:
             params = tc.arguments if isinstance(tc.arguments, dict) else {}
-            # ── schema validation (defense-in-depth) ─────────
             validation_err = self._validate_tool_args(tc.name, params, definition)
             if validation_err:
-                logger.warning("Tool %s args failed schema validation: %s",
-                               tc.name, validation_err)
+                logger.warning("Tool %s args failed schema validation: %s", tc.name, validation_err)
                 self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": validation_err})
                 return validation_err
-            result = handler(params)
+            future = self._sync_tool_executor.submit(handler, params)
+            try:
+                result = future.result(timeout=self.tool_timeout_seconds)
+            except FutureTimeoutError:
+                cancelled = future.cancel()
+                error_msg = (
+                    f"\u9519\u8bef:\u5de5\u5177\u6267\u884c\u8d85\u65f6 [{tc.name}]: "
+                    f"\u8d85\u8fc7 {self.tool_timeout_seconds:.1f} \u79d2"
+                    f"\uff08\u5df2\u53d6\u6d88\u6392\u961f\u4efb\u52a1={cancelled}\uff1b"
+                    "\u82e5\u5df2\u5f00\u59cb\u6267\u884c\uff0c\u5c06\u5728\u540e\u53f0\u81ea\u884c\u7ed3\u675f\uff09"
+                )
+                self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
+                return error_msg
             self.hooks.fire(HookPoint.TOOL_CALL_AFTER, data={**_hdata, "result": result})
             return result
         except Exception as e:
-            error_msg = f"工具执行失败 [{tc.name}]:{type(e).__name__}: {e}"
+            error_msg = f"\u5de5\u5177\u6267\u884c\u5931\u8d25 [{tc.name}]:{type(e).__name__}: {e}"
             self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
             return error_msg
 

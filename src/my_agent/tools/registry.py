@@ -13,6 +13,19 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 
+def _normalize_tool_schema(parameters: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return an object schema that rejects hallucinated tool parameters.
+
+    Function-call arguments are an API contract, not free-form JSON.  Keeping
+    ``additionalProperties`` closed catches typoed or invented parameters before
+    they reach a handler.  A tool can explicitly opt out by setting the field.
+    """
+    schema = dict(parameters or {"type": "object", "properties": {}})
+    if schema.get("type", "object") == "object" and "additionalProperties" not in schema:
+        schema["additionalProperties"] = False
+    return schema
+
+
 @dataclass
 class ToolDefinition:
     """工具定义元数据"""
@@ -69,7 +82,7 @@ class ToolRegistry:
             self._tools[name] = ToolDefinition(
                 name=name,
                 description=description,
-                parameters=parameters or {"type": "object", "properties": {}},
+                parameters=_normalize_tool_schema(parameters),
                 handler=func,
                 tags=tags or [],
                 permission_level=permission_level,
@@ -90,7 +103,7 @@ class ToolRegistry:
         self._tools[name] = ToolDefinition(
             name=name,
             description=description,
-            parameters=parameters or {"type": "object", "properties": {}},
+            parameters=_normalize_tool_schema(parameters),
             handler=handler,
             tags=tags or [],
             permission_level=permission_level,

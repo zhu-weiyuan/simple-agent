@@ -35,6 +35,7 @@ except Exception:  # noqa: BLE001
     _HAS_PYJWT = False
 
 ALGORITHM = "HS256"
+JWT_SECRET_MIN_BYTES = 32  # 256 bits — OWASP minimum for HMAC-SHA256
 DEFAULT_TTL_SECONDS = int(os.environ.get("JWT_TTL_SECONDS", str(7 * 24 * 3600)))
 ANONYMOUS_USER_ID = "anonymous"
 
@@ -114,13 +115,22 @@ def auth_required(func):
 def get_jwt_secret() -> str:
     """读取 JWT 密钥。
 
-    生产 (ENVIRONMENT=production) 下要求显式配置；开发缺省给一个固定 dev 值，
-    避免本地起不来 (与 DEV_AUTH_BYPASS 语义一致)。
+    生产 (ENVIRONMENT=production) 下要求显式配置且 >=32 字节；
+    开发缺省给一个固定 dev 值，避免本地起不来。
     """
     secret = os.environ.get("JWT_SECRET", "")
     if secret:
+        environment = os.environ.get("ENVIRONMENT", os.environ.get("APP_ENV", "")).strip().lower()
+        if environment in {"prod", "production"}:
+            if len(secret.encode("utf-8")) < JWT_SECRET_MIN_BYTES:
+                raise AuthError(
+                    f"JWT_SECRET must be at least {JWT_SECRET_MIN_BYTES} bytes in production "
+                    f"(got {len(secret.encode('utf-8'))} bytes). "
+                    f"Use: python -c 'import secrets; print(secrets.token_urlsafe(48))'"
+                )
         return secret
-    if os.environ.get("ENVIRONMENT") == "production":
+    environment = os.environ.get("ENVIRONMENT", os.environ.get("APP_ENV", "")).strip().lower()
+    if environment in {"prod", "production"}:
         raise AuthError("JWT_SECRET must be configured in production")
     return "dev-insecure-jwt-secret-change-me-0000000000000000"
 

@@ -13,6 +13,7 @@ module, while preventing a slow agent from blocking the HTTP server.
 from __future__ import annotations
 
 import asyncio
+import ast
 import copy
 import hashlib
 import inspect
@@ -36,15 +37,81 @@ from urllib.parse import urlsplit
 logger = logging.getLogger(__name__)
 
 
+def _parse_legacy_result(content: Any) -> Optional[Dict[str, Any]]:
+    """Decode result dictionaries written by pre-2.1 A2A workers.
+
+    Older workers persisted ``str(result)`` instead of JSON, so a result such
+    as ``{'stop_reason': 'llm_error', ...}`` was later rendered as a successful
+    task.  Only literal Python/JSON data is accepted; arbitrary text is never
+    executed.
+    """
+    if not isinstance(content, str):
+        return None
+    text = content.strip()
+    if not text.startswith("{") or "stop_reason" not in text:
+        return None
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            value = parser(text)
+        except (ValueError, SyntaxError, TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(value, dict) and "stop_reason" in value:
+            return value
+    return None
+
+
+def _normalize_task_payload(data: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
+    """Repair legacy terminal A2A records whose engine result was not successful."""
+    if str(data.get("state", "")).lower() != TaskState.COMPLETED.value:
+        return data, False
+    message = data.get("message") or {}
+    result = _parse_legacy_result(message.get("content"))
+    if not result:
+        return data, False
+    reason = str(result.get("stop_reason") or "").strip().lower()
+    if not reason or reason == "completed":
+        return data, False
+    repaired = copy.deepcopy(data)
+    repaired["state"] = (
+        TaskState.TIMED_OUT.value if reason == "timed_out"
+        else TaskState.FAILED.value
+    )
+    repaired["error"] = (
+        repaired.get("error")
+        or result.get("stop_detail")
+        or result.get("error")
+        or f"agent stopped with {reason}"
+    )
+    metadata = dict(repaired.get("metadata") or {})
+    metadata["legacyStateRepair"] = True
+    metadata["stopReason"] = reason
+    repaired["metadata"] = metadata
+    return repaired, True
+
+
 class TaskStore:
     """Best-effort SQLite persistence for A2A task records."""
 
     def __init__(self, db_path: str = "") -> None:
         self._db_path = db_path or os.getenv("A2A_TASKS_DB", "runtime/a2a_tasks.db")
+        # ``sqlite3.connect(":memory:")`` creates a *new* database for every
+        # connection. This store intentionally opens short-lived connections,
+        # so use a named shared-cache memory database and keep one connection
+        # open when tests or embedders request an in-memory store.
+        self._memory_uri: Optional[str] = None
+        self._memory_keeper: Optional[sqlite3.Connection] = None
+        if self._db_path == ":memory:":
+            self._memory_uri = f"file:a2a_tasks_{uuid.uuid4().hex}?mode=memory&cache=shared"
+            self._memory_keeper = sqlite3.connect(
+                self._memory_uri, uri=True, timeout=2.0, check_same_thread=False)
         self._db_available = self._init_db()
         self._recover_inflight()
+        self._repair_legacy_terminal_rows()
 
     def _connect(self) -> sqlite3.Connection:
+        if self._memory_uri is not None:
+            return sqlite3.connect(
+                self._memory_uri, uri=True, timeout=2.0, check_same_thread=False)
         return sqlite3.connect(self._db_path, timeout=2.0)
 
     def _init_db(self) -> bool:
@@ -99,6 +166,40 @@ class TaskStore:
         except sqlite3.Error as exc:
             logger.warning("Could not recover A2A tasks: %s", exc)
 
+    def _repair_legacy_terminal_rows(self) -> None:
+        """Migrate old ``completed`` rows that actually contain a failed result."""
+        if not self._db_available:
+            return
+        try:
+            conn = self._connect()
+            repaired_count = 0
+            try:
+                rows = conn.execute(
+                    "SELECT task_id, payload FROM a2a_tasks WHERE state = ?",
+                    (TaskState.COMPLETED.value,),
+                ).fetchall()
+                for task_id, raw_payload in rows:
+                    try:
+                        payload = json.loads(raw_payload)
+                    except (TypeError, ValueError):
+                        continue
+                    normalized, changed = _normalize_task_payload(payload)
+                    if not changed:
+                        continue
+                    conn.execute(
+                        "UPDATE a2a_tasks SET payload = ?, state = ?, updated_at = ? WHERE task_id = ?",
+                        (json.dumps(normalized, ensure_ascii=False),
+                         normalized["state"], time.time(), task_id),
+                    )
+                    repaired_count += 1
+                if repaired_count:
+                    conn.commit()
+                    logger.info("Repaired %d legacy A2A terminal records", repaired_count)
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            logger.warning("Could not repair legacy A2A tasks: %s", exc)
+
     def upsert(self, task_id: str, fingerprint: str, status: "TaskStatus") -> None:
         if not self._db_available:
             return
@@ -120,24 +221,68 @@ class TaskStore:
         except sqlite3.Error as exc:
             logger.warning("Could not persist A2A task %s: %s", task_id, exc)
 
-    def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch one task by primary key. O(1) index lookup."""
+    def get_record(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch the durable task payload and fingerprint by primary key."""
         if not self._db_available:
             return None
         try:
             conn = self._connect()
             try:
                 row = conn.execute(
-                    "SELECT payload FROM a2a_tasks WHERE task_id = ?", (task_id,)
+                    "SELECT fingerprint, payload, state FROM a2a_tasks WHERE task_id = ?", (task_id,)
                 ).fetchone()
             finally:
                 conn.close()
             if row is None:
                 return None
-            return json.loads(row[0])
+            return {
+                "fingerprint": str(row[0]),
+                "payload": json.loads(row[1]),
+                "state": str(row[2]),
+            }
         except (sqlite3.Error, ValueError, TypeError) as exc:
             logger.warning("Could not read A2A task %s: %s", task_id, exc)
             return None
+
+    def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch one task by primary key. O(1) index lookup."""
+        record = self.get_record(task_id)
+        return record["payload"] if record is not None else None
+
+    def health(self) -> Dict[str, Any]:
+        """Return a small, non-mutating persistence health probe."""
+        started = time.perf_counter()
+        if not self._db_available:
+            return {
+                "status": "error",
+                "required": True,
+                "available": False,
+                "path": self._db_path,
+                "reason": "A2A task store initialization failed",
+            }
+        try:
+            conn = self._connect()
+            try:
+                conn.execute("SELECT 1 FROM a2a_tasks LIMIT 1").fetchone()
+            finally:
+                conn.close()
+            return {
+                "status": "ok",
+                "required": True,
+                "available": True,
+                "path": self._db_path,
+                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            }
+        except sqlite3.Error as exc:
+            logger.warning("Could not probe A2A task store: %s", exc)
+            return {
+                "status": "error",
+                "required": True,
+                "available": False,
+                "path": self._db_path,
+                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                "reason": str(exc),
+            }
 
     def list_tasks(self, state: Optional[str] = None, limit: int = 50,
                    offset: int = 0) -> List[Dict[str, Any]]:
@@ -156,7 +301,15 @@ class TaskStore:
                 rows = conn.execute(sql, params).fetchall()
             finally:
                 conn.close()
-            return [json.loads(r[0]) for r in rows]
+            items: List[Dict[str, Any]] = []
+            for row in rows:
+                try:
+                    payload = json.loads(row[0])
+                except (TypeError, ValueError):
+                    continue
+                normalized, _ = _normalize_task_payload(payload)
+                items.append(normalized)
+            return items
         except (sqlite3.Error, ValueError, TypeError) as exc:
             logger.warning("Could not list A2A tasks: %s", exc)
             return []
@@ -293,6 +446,7 @@ class TaskStatus:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "TaskStatus":
+        data, _ = _normalize_task_payload(data)
         message_data = data.get("message")
         message = A2AMessage.from_dict(message_data) if message_data else None
         raw_state = data.get("state", TaskState.UNKNOWN.value)
@@ -567,6 +721,18 @@ class A2AServer:
                     raise A2AConflictError("task id was already used with different content")
                 return copy.deepcopy(existing)
 
+            # A service restart empties ``_tasks`` but must not allow an old
+            # task id to execute again. The durable fingerprint is the source
+            # of truth for idempotency across restarts.
+            persisted = self.store.get_record(task_id)
+            if persisted is not None:
+                if persisted["fingerprint"] != fingerprint:
+                    raise A2AConflictError("task id was already used with different content")
+                restored = TaskStatus.from_dict(persisted["payload"])
+                self._tasks[task_id] = restored
+                self._fingerprints[task_id] = persisted["fingerprint"]
+                return copy.deepcopy(restored)
+
             task = TaskStatus(
                 task_id=task_id,
                 state=TaskState.SUBMITTED,
@@ -634,11 +800,15 @@ class A2AServer:
             if isinstance(result, dict):
                 stop_reason = str(result.get("stop_reason", "")).strip().lower()
                 result_content = result.get("content", result)
-                if stop_reason in {"error", "failed", "llm_error", "timed_out"}:
+                if stop_reason and stop_reason != "completed":
                     detail = result.get("stop_detail") or result.get("error") or result_content
+                    terminal_state = (
+                        TaskState.TIMED_OUT if stop_reason == "timed_out"
+                        else TaskState.FAILED
+                    )
                     self._set_state(
                         task_id,
-                        TaskState.FAILED,
+                        terminal_state,
                         error=str(detail),
                         message=A2AMessage(
                             task_id=task_id,
@@ -714,13 +884,23 @@ class A2AServer:
             with self._lock:
                 self._async_handles[task_id] = (loop, current)
             try:
+                if cancel_event.is_set():
+                    raise _TaskCancelled()
                 value = arun(content)
                 if not inspect.isawaitable(value):
                     raise TypeError("agent.arun() must return an awaitable")
                 if cancel_event.is_set():
+                    # Cancellation can race with coroutine construction. Close
+                    # a bare coroutine before raising so it is not left unawaited.
+                    close = getattr(value, "close", None)
+                    if callable(close):
+                        close()
                     raise _TaskCancelled()
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    close = getattr(value, "close", None)
+                    if callable(close):
+                        close()
                     raise _TaskTimedOut()
                 try:
                     return await asyncio.wait_for(value, timeout=remaining)

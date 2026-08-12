@@ -62,10 +62,16 @@ from .core.hooks import HookPoint, HookRegistry
 from .tools.registry import ToolRegistry
 from .tools.builtins import (
     CalculatorTool,
+    FileInfoTool,
+    GitDiffTool,
+    GitStatusTool,
     GetTimeTool,
     ListFilesTool,
     PowerShellTool,
     ReadFileTool,
+    ReadFileRangeTool, ReadJsonTool, SearchTextTool,
+    RunTestsTool,
+    SearchFilesTool,
 )
 from .tools.agent_tool import AgentAsTool, create_agent_tool
 from .tools.structured_output import StructuredOutputTool
@@ -193,6 +199,11 @@ class SimpleAgent:
         "你拥有以下能力:"
         "- read_file: 读取文件内容"
         "- list_files: 列出目录中的文件和文件夹"
+        "- search_files: " + "\u6309\u6587\u4ef6\u540d\u901a\u914d\u7b26\u67e5\u627e\u5de5\u4f5c\u533a\u6587\u4ef6"
+        "- read_file_range: " + "\u8bfb\u53d6\u6307\u5b9a\u884c\u8303\u56f4"
+        "- file_info: " + "\u83b7\u53d6\u6587\u4ef6\u5143\u6570\u636e"
+        "- git_status/git_diff: " + "\u67e5\u770b\u4ee3\u7801\u4ed3\u5e93\u72b6\u6001\u548c\u5dee\u5f02"
+        "- run_tests: " + "\u8fd0\u884c\u53d7\u9650\u7684 pytest/ruff \u68c0\u67e5"
         "- calculator: 执行数学计算"
         "- get_time: 获取当前时间"
         "调用工具后，请基于工具结果给出简洁、明确的中文回答。"
@@ -279,6 +290,12 @@ class SimpleAgent:
             PowerShellTool,
             ReadFileTool,
             ListFilesTool,
+            SearchFilesTool,
+            ReadFileRangeTool, ReadJsonTool, SearchTextTool,
+            FileInfoTool,
+            GitStatusTool,
+            GitDiffTool,
+            RunTestsTool,
         ):
             tool_cls().register(self.tool_registry)
 

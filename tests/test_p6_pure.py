@@ -71,7 +71,9 @@ def make_engine(llm, with_tool=None):
         name, fn = with_tool
         eng.tool_registry.add(
             name=name, handler=fn, description="test tool",
-            parameters={"type": "object", "properties": {}})
+            # These mock handlers intentionally accept arbitrary probe arguments.
+            # Production tools keep the registry default (additionalProperties=false).
+            parameters={"type": "object", "properties": {}, "additionalProperties": True})
     return eng
 
 

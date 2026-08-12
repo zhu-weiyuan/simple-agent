@@ -139,6 +139,7 @@ class ScoredMemory:
     relevance: float
     decay: float
     score: float
+    rerank_score: Optional[float] = None
 
 
 # ── 幂等键 ───────────────────────────────────────────────────
@@ -202,9 +203,15 @@ class UserMemoryStore:
         db_path: str = "conversations.db",
         embed_fn: Optional[Callable[[str], Sequence[float]]] = None,
         half_life_days: float = 30.0,
+        rerank_fn: Optional[Callable[[str, Sequence[str]], Sequence[float]]] = None,
+        rerank_min_score: float = 0.0,
+        rerank_candidate_limit: int = 20,
     ) -> None:
         self.db_path = db_path
         self._embed_fn = embed_fn or _hash_embed
+        self._rerank_fn = rerank_fn
+        self.rerank_min_score = float(rerank_min_score)
+        self.rerank_candidate_limit = max(1, int(rerank_candidate_limit))
         self.half_life_seconds = max(1.0, half_life_days * 86400.0)
         self._persistent_conn: Optional[sqlite3.Connection] = None
         if db_path == ":memory:":
@@ -465,7 +472,30 @@ class UserMemoryStore:
             if score >= min_score:
                 scored.append(ScoredMemory(mem, relevance, decay, score))
         scored.sort(key=lambda s: s.score, reverse=True)
-        return scored[:top_k]
+        if not scored or self._rerank_fn is None:
+            return scored[:top_k]
+
+        # The vector/decay score first narrows candidates. A cross-encoder then
+        # refines semantic relevance. Provider errors intentionally preserve the
+        # local ranking, so a remote reranker cannot block the primary chat path.
+        candidates = scored[:self.rerank_candidate_limit]
+        try:
+            rerank_scores = list(self._rerank_fn(query, [item.memory.content for item in candidates]))
+            if len(rerank_scores) != len(candidates):
+                raise ValueError("rerank score count does not match candidate count")
+            reranked: List[ScoredMemory] = []
+            for item, raw_score in zip(candidates, rerank_scores):
+                score = float(raw_score)
+                if not math.isfinite(score):
+                    raise ValueError("rerank score is not finite")
+                item.rerank_score = score
+                if score >= self.rerank_min_score:
+                    reranked.append(item)
+            reranked.sort(key=lambda item: (item.rerank_score, item.score), reverse=True)
+            return reranked[:top_k]
+        except Exception as e:  # noqa: BLE001 - remote ranker is strictly best-effort
+            logger.warning("rerank_fn failed (%s); retaining local memory ranking", e)
+            return scored[:top_k]
 
     def build_background_block(
         self, user_id: str, query: str, top_k: int = 5

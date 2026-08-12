@@ -117,11 +117,17 @@ class A2AHub:
     def submit(self, content: str, task_id: Optional[str] = None,
                agent: str = "local") -> TaskStatus:
         if agent == "local":
+            try:
+                status = self.local.handle_message(
+                    A2AMessage(task_id=task_id, type=MessageType.PROMPT, content=content))
+            except A2AConflictError:
+                self._count("conflicts")
+                raise
             self._count("submitted")
-            return self.local.handle_message(
-                A2AMessage(task_id=task_id, type=MessageType.PROMPT, content=content))
+            return status
         client = self.remote_agents.get(agent)
         if client is None:
+            self._count("conflicts")
             raise A2AConflictError(f"unknown agent: {agent}")
         self._count("submitted")
         return client.send_prompt(content, task_id=task_id)
@@ -157,6 +163,15 @@ class A2AHub:
             "counters": dict(self._counters),
             "local": self.local.stats(),
             "agents": list(self.remote_agents.keys()),
+        }
+
+    def health(self) -> Dict[str, Any]:
+        """Health of the local A2A task runtime and its durable store."""
+        local = self.local.stats()
+        return {
+            **self.local.store.health(),
+            "queue_depth": local.get("queue_depth", 0),
+            "active_workers": local.get("active_workers", 0),
         }
 
     def record_terminal(self, task: TaskStatus) -> None:

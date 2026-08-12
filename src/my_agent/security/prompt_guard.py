@@ -43,6 +43,13 @@ _INJECTION_PATTERNS = [
 _compiled = [re.compile(p, re.IGNORECASE) for p, _ in _INJECTION_PATTERNS]
 _threat_names = [name for _, name in _INJECTION_PATTERNS]
 
+# Output leak patterns (compiled at module load)
+_OUTPUT_LEAK_PATTERNS = [
+    (re.compile(r"你是一个专业的", re.IGNORECASE), "system prompt leaked"),
+    (re.compile(r"你的职责：", re.IGNORECASE), "instruction leaked"),
+    (re.compile(r"回复要求：", re.IGNORECASE), "instruction leaked"),
+]
+
 
 def scan_input(text: str) -> ScanResult:
     """Scan user input for injection attempts.
@@ -58,10 +65,11 @@ def scan_input(text: str) -> ScanResult:
         if pattern.search(text):
             threats.append(name)
 
-    # Clean: remove suspicious instruction-like prefixes
+    # Clean: remove matched substrings (not threat names) from text
     cleaned = text
-    for threat in threats:
-        cleaned = cleaned.replace(threat, "[已过滤]")
+    for pattern, _name in zip(_compiled, _threat_names):
+        if pattern.search(cleaned):
+            cleaned = pattern.sub("[已过滤]", cleaned)
 
     return ScanResult(
         is_safe=len(threats) == 0,
@@ -83,14 +91,8 @@ def reinforce_system_prompt(prompt: str) -> str:
 def scan_output(text: str) -> ScanResult:
     """Check LLM output for suspicious behavior (leaking system prompt, etc.)."""
     threats = []
-    leak_patterns = [
-        (r"你是一个专业的", "system prompt leaked"),
-        (r"你的职责：", "instruction leaked"),
-        (r"回复要求：", "instruction leaked"),
-    ]
-
-    for pattern, name in leak_patterns:
-        if pattern in text:
+    for pattern, name in _OUTPUT_LEAK_PATTERNS:
+        if pattern.search(text):
             threats.append(name)
 
     return ScanResult(
