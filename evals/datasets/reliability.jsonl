@@ -1,0 +1,6 @@
+﻿{"id":"rel-001","input":"LLM 返回 HTTP 400","fault":"llm_400","expected_terminal":"failed","must_stop":true}
+{"id":"rel-002","input":"工具执行超过超时限制","fault":"tool_timeout","expected_terminal":"timed_out","must_stop":true}
+{"id":"rel-003","input":"同一个 taskId 重复提交相同内容","fault":"duplicate_same_payload","expected_terminal":"same_result","must_stop":true}
+{"id":"rel-004","input":"同一个 taskId 重复提交不同内容","fault":"duplicate_conflict","expected_terminal":"conflict","must_stop":true}
+{"id":"rel-005","input":"服务重启后恢复未完成任务","fault":"restart_recovery","expected_terminal":"recover_or_fail","must_stop":true}
+{"id":"rel-006","input":"工具返回坏 JSON","fault":"invalid_tool_json","expected_terminal":"failed_or_recover","must_stop":true}

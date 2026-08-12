@@ -1,0 +1,5 @@
+{"id":"discover-001","input":"列出当前目录的文件","candidate_tools":["list_files","read_file","search_files"],"expected_tool":"list_files","category":"filesystem"}
+{"id":"discover-002","input":"搜索配置中 timeout 的定义位置","candidate_tools":["search_text","search_files","read_file_range"],"expected_tool":"search_text","category":"code_search"}
+{"id":"discover-003","input":"解析 evals/datasets/safety.jsonl 中的 JSON","candidate_tools":["read_json","read_file","file_info"],"expected_tool":"read_json","category":"structured_data"}
+{"id":"discover-004","input":"查看未提交的代码变更","candidate_tools":["git_status","git_diff","run_tests"],"expected_tool":"git_status","category":"quality"}
+{"id":"discover-005","input":"写一首诗，不访问任何文件","candidate_tools":["list_files","search_text","calculator"],"expected_tool":null,"category":"no_tool"}

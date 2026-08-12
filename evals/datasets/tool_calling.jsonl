@@ -1,0 +1,10 @@
+﻿{"id":"tool-001","input":"列出当前目录的文件","expected_tool":"list_files","expected_args":{"path":"."},"allow_no_tool":false,"category":"filesystem"}
+{"id":"tool-002","input":"在项目里找出所有 Python 测试文件","expected_tool":"search_files","expected_args":{"pattern":"test_*.py"},"allow_no_tool":false,"category":"filesystem"}
+{"id":"tool-003","input":"读取 app_prod.py 第 1500 到 1520 行","expected_tool":"read_file_range","expected_args":{"path":"app_prod.py","start_line":1500,"end_line":1520},"allow_no_tool":false,"category":"filesystem"}
+{"id":"tool-004","input":"查看当前 Git 工作区是否有未提交修改","expected_tool":"git_status","expected_args":{"path":"."},"allow_no_tool":false,"category":"git"}
+{"id":"tool-005","input":"2 的 10 次方是多少？","expected_tool":"calculator","expected_args":{},"allow_no_tool":false,"category":"utility"}
+{"id":"tool-006","input":"现在几点了？","expected_tool":"get_time","expected_args":{},"allow_no_tool":false,"category":"utility"}
+{"id":"tool-007","input":"查看 src/my_agent/a2a.py 文件信息","expected_tool":"file_info","expected_args":{"path":"src/my_agent/a2a.py"},"allow_no_tool":false,"category":"filesystem"}
+{"id":"tool-008","input":"查看当前 Git 差异","expected_tool":"git_diff","expected_args":{"path":"."},"allow_no_tool":false,"category":"git"}
+{"id":"tool-009","input":"在项目里搜索包含 AGENT_WORKSPACE_ROOT 的代码行","expected_tool":"search_text","expected_args":{"query":"AGENT_WORKSPACE_ROOT"},"allow_no_tool":false,"category":"filesystem"}
+{"id":"tool-010","input":"读取 evals/datasets/tool_calling.jsonl 的 JSON 内容","expected_tool":"read_json","expected_args":{"path":"evals/datasets/tool_calling.jsonl"},"allow_no_tool":false,"category":"filesystem"}

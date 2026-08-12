@@ -1,0 +1,5 @@
+﻿{"id":"json-001","input":"返回用户状态 JSON","schema":{"type":"object","required":["status"],"properties":{"status":{"type":"string","enum":["active","inactive"]}}},"category":"valid"}
+{"id":"json-002","input":"返回包含 count 的 JSON","schema":{"type":"object","required":["count"],"properties":{"count":{"type":"integer"}}},"category":"type_error"}
+{"id":"json-003","input":"返回 priority 枚举","schema":{"type":"object","required":["priority"],"properties":{"priority":{"type":"string","enum":["low","medium","high"]}}},"category":"enum"}
+{"id":"json-004","input":"只输出 JSON，不要 Markdown 代码块","schema":{"type":"object","required":["answer"],"properties":{"answer":{"type":"string"}}},"category":"format"}
+{"id":"json-005","input":"返回嵌套结果","schema":{"type":"object","required":["result"],"properties":{"result":{"type":"object"}}},"category":"nested"}
