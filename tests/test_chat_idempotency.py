@@ -46,7 +46,7 @@ def chat_context(monkeypatch, tmp_path):
             "model": "test-model",
         }
 
-    async def arun_stream(message, *, session, ctx, session_id):
+    async def arun_stream(message, *, session, ctx, session_id, **kwargs):
         calls["stream"] += 1
         yield {"delta": f"mock:{message}"}
 
@@ -120,7 +120,7 @@ def test_stream_success_is_replayable(client, chat_context):
 def test_stream_failure_releases_key_for_retry(client, chat_context, monkeypatch):
     calls = {"count": 0}
 
-    async def failing_stream(message, *, session, ctx, session_id):
+    async def failing_stream(message, *, session, ctx, session_id, **kwargs):
         calls["count"] += 1
         raise RuntimeError("stream failed")
         yield  # pragma: no cover
