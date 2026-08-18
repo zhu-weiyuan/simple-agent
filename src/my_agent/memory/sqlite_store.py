@@ -498,11 +498,21 @@ class SqliteConversationStore:
         """Associate a new or unowned session with a user without overwriting ownership."""
         with self._get_conn() as conn:
             conn.execute("INSERT OR IGNORE INTO sessions (id) VALUES (?)", (session_id,))
-            session_row = conn.execute(
-                "SELECT user_id, tenant_id FROM sessions WHERE id = ?", (session_id,)
-            ).fetchone()
-            tenant_id = (session_row["tenant_id"] if session_row and "tenant_id" in session_row.keys()
-                         else "default") or "default"
+            # The canonical lightweight schema has no tenant_id, while an
+            # older multi-tenant schema does.  Do not select an optional
+            # legacy column unconditionally: that made every first owned
+            # session fail on a fresh/default installation.
+            session_columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+            if "tenant_id" in session_columns:
+                session_row = conn.execute(
+                    "SELECT user_id, tenant_id FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                tenant_id = (session_row["tenant_id"] if session_row else "default") or "default"
+            else:
+                session_row = conn.execute(
+                    "SELECT user_id FROM sessions WHERE id = ?", (session_id,)
+                ).fetchone()
+                tenant_id = "default"
             self._ensure_session_user_fk_target(conn, user_id, tenant_id)
             row = conn.execute("SELECT user_id FROM sessions WHERE id = ?", (session_id,)).fetchone()
             owner = row["user_id"] if row else None

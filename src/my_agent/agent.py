@@ -58,6 +58,10 @@ from .types.agent import (
     StopReason,
 )
 from .core.engine import QueryEngine
+from .artifact_store import ArtifactStore
+from .file_observation import FileObservationStore
+from .session_events import SessionEventLog
+from .jobs import JobManager
 from .core.hooks import HookPoint, HookRegistry
 from .tools.registry import ToolRegistry
 from .tools.builtins import (
@@ -69,11 +73,13 @@ from .tools.builtins import (
     ListFilesTool,
     PowerShellTool,
     ReadFileTool,
-    ReadFileRangeTool, ReadJsonTool, SearchTextTool,
+    ReadFileRangeTool, ReadJsonTool, SearchTextTool, WriteFileTool, EditFileTool,
     RunTestsTool,
     SearchFilesTool,
 )
 from .tools.agent_tool import AgentAsTool, create_agent_tool
+from .tools.builtins.artifact import ReadArtifactTool, SearchArtifactTool
+from .tools.builtins.jobs import JobListTool, JobOutputTool, JobCancelTool
 from .tools.structured_output import StructuredOutputTool
 from .memory.store import MemoryStore
 from .memory.retrieval import MemoryRetriever
@@ -91,7 +97,13 @@ except ImportError:
 from .llm import LLMClient
 
 try:
-    from .mcp_client import MCPClient
+    from .mcp_client import (
+        MCPClient,
+        MCPConfigError,
+        create_mcp_client,
+        legacy_stdio_config,
+        load_mcp_server_configs,
+    )
 
     MCP_AVAILABLE = True
 except ImportError:
@@ -233,6 +245,12 @@ class SimpleAgent:
         # ── 桥接层 ───────────────────────────────────────────
         self.bridge = LocalBridge()
 
+        # Durable runtime services are shared by the agent's registered tools.
+        self.artifact_store = ArtifactStore(self.project_root / "runtime" / "artifacts")
+        self.file_observations = FileObservationStore()
+        self.session_event_log = SessionEventLog(self.project_root / "runtime" / "session-events")
+        self.job_manager = JobManager(self.project_root / "runtime" / "jobs")
+
         # ── 工具注册表 ───────────────────────────────────────
         self.tool_registry = ToolRegistry()
         self._register_builtin_tools()
@@ -247,18 +265,25 @@ class SimpleAgent:
             tool_registry=self.tool_registry,
             hooks=self.hooks,
             session_config=session_config,
+            artifact_store=self.artifact_store,
+            event_log=self.session_event_log,
+            file_observations=self.file_observations,
         )
 
 
 
-        # ── MCP ──────────────────────────────────────────────
-        self._mcp_client: Optional[Any] = None
-        self._init_mcp()
-
         # ── 调试 ─────────────────────────────────────────────
+        # 初始化 MCP 之前先设置，确保配置错误也能安全地写入调试信息。
         self.debug_enabled = os.getenv(
             "MY_AGENT_DEBUG", "0"
         ).strip().lower() not in {"0", "false", "off"}
+
+        # ── MCP ──────────────────────────────────────────────
+        # ``_mcp_client`` 保留为首个连接的兼容别名；新代码按服务名保存
+        # 多个客户端，防止一个外部服务器的故障影响其他服务器。
+        self._mcp_client: Optional[Any] = None
+        self._mcp_clients: Dict[str, Any] = {}
+        self._init_mcp()
 
         # ── LLM 客户端 ───────────────────────────────────────
         api_key = os.getenv("OPENAI_API_KEY", "xxx")
@@ -289,6 +314,8 @@ class SimpleAgent:
             CalculatorTool,
             PowerShellTool,
             ReadFileTool,
+            WriteFileTool,
+            EditFileTool,
             ListFilesTool,
             SearchFilesTool,
             ReadFileRangeTool, ReadJsonTool, SearchTextTool,
@@ -297,7 +324,15 @@ class SimpleAgent:
             GitDiffTool,
             RunTestsTool,
         ):
-            tool_cls().register(self.tool_registry)
+            tool = RunTestsTool(self.job_manager) if tool_cls is RunTestsTool else (
+                tool_cls(self.file_observations) if tool_cls in {ReadFileTool, WriteFileTool, EditFileTool} else tool_cls()
+            )
+            tool.register(self.tool_registry)
+        for tool in (
+            ReadArtifactTool(self.artifact_store), SearchArtifactTool(self.artifact_store),
+            JobListTool(self.job_manager), JobOutputTool(self.job_manager), JobCancelTool(self.job_manager),
+        ):
+            tool.register(self.tool_registry)
 
     # ── LLM 注入 ─────────────────────────────────────────────
 
@@ -317,60 +352,148 @@ class SimpleAgent:
 
     # ── MCP ──────────────────────────────────────────────────
 
+    @staticmethod
+    def _mcp_registered_tool_name(server_name: str, remote_tool_name: str) -> str:
+        """Give every external MCP tool an unambiguous, collision-safe name."""
+        import re
+
+        safe_server = re.sub(r"[^A-Za-z0-9_]+", "_", server_name).strip("_") or "server"
+        safe_tool = re.sub(r"[^A-Za-z0-9_]+", "_", remote_tool_name).strip("_") or "tool"
+        return f"mcp_{safe_server}_{safe_tool}"[:128]
+
     def _init_mcp(self) -> None:
+        """Load explicit ``mcpServers`` JSON config, with legacy env fallback.
+
+        External tools always use a namespaced registry name such as
+        ``mcp_filesystem_list_directory``. This prevents a configured server
+        from replacing a built-in tool by merely reusing its name.
+        """
         if not MCP_AVAILABLE:
             return
 
-        mcp_command = os.getenv("MCP_WEATHER_COMMAND", "").strip()
-        if not mcp_command:
+        try:
+            configs = load_mcp_server_configs()
+        except MCPConfigError as exc:
+            self._debug(f"MCP 配置无效，已跳过加载: {exc}")
             return
 
-        try:
-            command = mcp_command.split()
-            self._mcp_client = MCPClient(command)
-            self._mcp_client.start()
+        # Backward compatibility for the earlier single stdio setting. An
+        # explicit JSON config takes precedence so deployments are predictable.
+        if not configs:
+            legacy_command = os.getenv("MCP_WEATHER_COMMAND", "").strip()
+            if legacy_command:
+                try:
+                    configs = [legacy_stdio_config(legacy_command)]
+                except MCPConfigError as exc:
+                    self._debug(f"旧 MCP 命令无效，已跳过加载: {exc}")
+                    return
+        if not configs:
+            return
 
-            mcp_tools = self._mcp_client.list_tools()
-            for tool in mcp_tools:
-                self.tool_registry.add(
-                    name=tool["name"],
-                    handler=self._make_mcp_tool_wrapper(tool["name"]),
-                    description=tool.get("description", ""),
-                    parameters=tool.get(
-                        "inputSchema",
-                        {"type": "object", "properties": {}},
-                    ),
-                )
-            self._debug(f"已加载 {len(mcp_tools)} 个 MCP 工具")
-        except Exception as e:
-            self._debug(f"MCP 初始化失败:{e}")
-            self._mcp_client = None
-
-    def _make_mcp_tool_wrapper(self, tool_name: str):
-        def wrapper(params: Dict[str, Any]) -> str:
-            if self._mcp_client is None:
-                return "错误:MCP 客户端未启动"
+        for config in configs:
+            client: Optional[Any] = None
             try:
-                result = self._mcp_client.call_tool(tool_name, params)
+                client = create_mcp_client(config)
+                client.start()
+                tools = client.list_tools()
+                self._mcp_clients[config.name] = client
+                if self._mcp_client is None:
+                    self._mcp_client = client
+
+                loaded = 0
+                for tool in tools:
+                    remote_name = tool.get("name") if isinstance(tool, dict) else None
+                    if not isinstance(remote_name, str) or not remote_name.strip():
+                        self._debug(f"MCP 服务器 {config.name} 返回了无效工具定义，已跳过")
+                        continue
+                    registered_name = self._mcp_registered_tool_name(config.name, remote_name)
+                    if registered_name in self.tool_registry:
+                        self._debug(f"MCP 工具名称冲突，已跳过: {registered_name}")
+                        continue
+                    self.tool_registry.add(
+                        name=registered_name,
+                        handler=self._make_mcp_tool_wrapper(client, config.name, remote_name),
+                        description=f"[MCP:{config.name}] {tool.get('description', '')}".strip(),
+                        parameters=tool.get("inputSchema", {"type": "object", "properties": {}}),
+                        tags=["mcp", config.name, config.transport],
+                        # Remote tools can access network/filesystem resources;
+                        # retain a human approval gate by default.
+                        permission_level="ask",
+                    )
+                    loaded += 1
+                self._debug(f"MCP 服务器 {config.name} 已加载 {loaded} 个工具 ({config.transport})")
+            except Exception as exc:
+                if client is not None:
+                    try:
+                        client.stop()
+                    except Exception:  # noqa: BLE001 - cleanup must not mask startup error
+                        pass
+                self._mcp_clients.pop(config.name, None)
+                if self._mcp_client is client:
+                    self._mcp_client = next(iter(self._mcp_clients.values()), None)
+                self._debug(f"MCP 服务器 {config.name} 初始化失败，已隔离: {type(exc).__name__}: {exc}")
+
+    def _make_mcp_tool_wrapper(self, client: Any, server_name: str, tool_name: str):
+        def wrapper(params: Dict[str, Any]) -> str:
+            try:
+                result = client.call_tool(tool_name, params)
                 return str(result)
-            except Exception as e:
-                return f"MCP 调用失败:{type(e).__name__}: {e}"
+            except Exception as exc:
+                return f"MCP 调用失败[{server_name}/{tool_name}]:{type(exc).__name__}: {exc}"
 
         return wrapper
 
     # ── 增强模块 ─────────────────────────────────────────────
 
     def _init_enhanced_modules(self) -> None:
-        self._router = DynamicRouter()
-        self._persona_memory = PersonaMemory()
-        self._persona_extractor = PersonaExtractor()
-        self._category_rag = CategoryRAG(self._persona_memory)
-        self._hallucination_detector = HallucinationDetector()
-        self._citation_system = DeterministicCitation()
-        self._multi_index = MultiIndexRetrieval()
-        self._load_enhanced_state()
+        """Initialize enhanced services transactionally.
 
-    def _load_enhanced_state(self) -> None:
+        An optional module must be either fully usable or entirely disabled;
+        publishing objects one by one left a half-initialized agent after a
+        constructor/state-load failure.
+        """
+        try:
+            router = DynamicRouter()
+            persona_memory = PersonaMemory()
+            persona_extractor = PersonaExtractor()
+            category_rag = CategoryRAG(persona_memory)
+            hallucination_detector = HallucinationDetector()
+            citation_system = DeterministicCitation()
+            multi_index = MultiIndexRetrieval()
+            self._load_enhanced_state(
+                persona_memory=persona_memory,
+                multi_index=multi_index,
+                citation_system=citation_system,
+                strict=True,
+            )
+        except Exception as exc:
+            self.enable_enhanced = False
+            self._router = None
+            self._persona_memory = None
+            self._persona_extractor = None
+            self._category_rag = None
+            self._hallucination_detector = None
+            self._citation_system = None
+            self._multi_index = None
+            self._debug(f"增强模块初始化失败，已回退到基础模式: {exc}")
+            return
+
+        self._router = router
+        self._persona_memory = persona_memory
+        self._persona_extractor = persona_extractor
+        self._category_rag = category_rag
+        self._hallucination_detector = hallucination_detector
+        self._citation_system = citation_system
+        self._multi_index = multi_index
+
+    def _load_enhanced_state(
+        self,
+        *,
+        persona_memory: Optional[Any] = None,
+        multi_index: Optional[Any] = None,
+        citation_system: Optional[Any] = None,
+        strict: bool = False,
+    ) -> None:
         state_path = self.project_root / "enhanced_state.json"
         if not state_path.exists():
             return
@@ -387,7 +510,10 @@ class SimpleAgent:
                         timestamp=fact_data["timestamp"],
                         source=fact_data["source"],
                     )
-                    self._persona_memory.add_fact(fact)
+                    target_persona_memory = persona_memory or self._persona_memory
+                    if target_persona_memory is None:
+                        raise RuntimeError("PersonaMemory 未初始化")
+                    target_persona_memory.add_fact(fact)
             if "documents" in state:
                 from .enhanced.multi_index_retrieval import Document
 
@@ -398,7 +524,10 @@ class SimpleAgent:
                         metadata=doc_data.get("metadata", {}),
                         embedding=doc_data.get("embedding"),
                     )
-                    self._multi_index.add_document(doc)
+                    target_multi_index = multi_index or self._multi_index
+                    if target_multi_index is None:
+                        raise RuntimeError("MultiIndexRetrieval 未初始化")
+                    target_multi_index.add_document(doc)
             if "citations" in state:
                 from .enhanced.deterministic_citation import Citation
 
@@ -409,8 +538,13 @@ class SimpleAgent:
                         confidence=cit_data["confidence"],
                         timestamp=cit_data["timestamp"],
                     )
-                    self._citation_system.add_citation(cit)
+                    target_citation_system = citation_system or self._citation_system
+                    if target_citation_system is None:
+                        raise RuntimeError("DeterministicCitation 未初始化")
+                    target_citation_system.add_citation(cit)
         except Exception as e:
+            if strict:
+                raise
             self._debug(f"加载增强状态失败: {e}")
 
     def _save_enhanced_state(self) -> None:
@@ -749,9 +883,16 @@ class SimpleAgent:
     # ── lifecycle ────────────────────────────────────────────
 
     def close(self) -> None:
-        if self._mcp_client is not None:
-            self._mcp_client.stop()
-            self._mcp_client = None
+        clients = list(self._mcp_clients.values())
+        if self._mcp_client is not None and all(client is not self._mcp_client for client in clients):
+            clients.append(self._mcp_client)
+        self._mcp_clients = {}
+        self._mcp_client = None
+        for client in clients:
+            try:
+                client.stop()
+            except Exception as exc:  # noqa: BLE001 - closing one peer must not leak others
+                self._debug(f"停止 MCP 客户端失败: {exc}")
 
     def __enter__(self) -> "SimpleAgent":
         return self

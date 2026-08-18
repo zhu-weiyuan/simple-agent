@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import json
+import os
+import threading
+import uuid
 
 
 @dataclass
@@ -32,6 +35,10 @@ class MemoryStore:
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_seed_files()
         self._injected_memory: List[str] = []
+        # Protect read -> de-duplicate -> write as one operation.  The lock is
+        # intentionally per MemoryStore instance; the atomic replacement below
+        # also guarantees readers never observe a partially-written markdown file.
+        self._lessons_lock = threading.RLock()
 
     def _ensure_seed_files(self) -> None:
         if not self.facts_path.exists():
@@ -94,16 +101,40 @@ class MemoryStore:
         return result
 
     def append_lesson(self, lesson: str) -> bool:
+        """Append a unique lesson without exposing a partial file to readers.
+
+        A previous implementation checked for duplicates and then appended in
+        separate operations, so concurrent threads could write the same lesson
+        or interleave a newline.  Keep the whole read/modify/write sequence in
+        one critical section and publish the completed file with ``os.replace``.
+        """
         lesson = lesson.strip()
         if not lesson:
             return False
-        lessons = self.load_lessons()
-        if lesson in lessons:
-            return False
-        with self.lessons_path.open("a", encoding="utf-8") as f:
-            if not self.lessons_path.read_text(encoding="utf-8").endswith("\n"):
-                f.write("\n")
-            f.write(f"- {lesson}\n")
+
+        with self._lessons_lock:
+            text = self.lessons_path.read_text(encoding="utf-8")
+            existing = {
+                line.strip()[2:].strip()
+                for line in text.splitlines()
+                if line.strip().startswith("- ")
+            }
+            if lesson in existing:
+                return False
+
+            updated = text if text.endswith("\n") else text + "\n"
+            updated += f"- {lesson}\n"
+            tmp_path = self.lessons_path.with_name(
+                f".{self.lessons_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+            )
+            try:
+                tmp_path.write_text(updated, encoding="utf-8")
+                os.replace(tmp_path, self.lessons_path)
+            finally:
+                # ``os.replace`` removes the source path.  This covers failures
+                # before replace without deleting the last known-good file.
+                if tmp_path.exists():
+                    tmp_path.unlink(missing_ok=True)
         return True
 
     # ── recall ───────────────────────────────────────────────

@@ -13,11 +13,15 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+from fnmatch import fnmatchcase
+from pathlib import PurePosixPath
 import json
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import re
+import random
+import time
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -33,8 +37,18 @@ from typing import (
 from ..types.message import Message, Role, ToolCall
 from ..types.session import SessionConfig, SessionState
 from ..tools.registry import ToolRegistry
+from ..resilience import ToolCircuitManager
+from ..artifact_store import ArtifactStore
+from ..file_observation import FileObservationStore
+from ..session_events import SessionEventLog
+from ..tool_protocol import ToolErrorInfo, classify_tool_error
+try:
+    from ..observability import get_metrics as _get_obs_metrics
+except ImportError:  # pragma: no cover
+    _get_obs_metrics = None  # type: ignore[assignment]
 from ..gateway import BudgetExceededError, BudgetPolicy, BudgetStatus
 from ..security.prompt_guard import scan_input, scan_output
+from ..bridge.permissions import PermissionPolicy
 from .hooks import HookPoint, HookRegistry
 from .context_assembler import estimate_tokens, fit_messages_to_budget
 
@@ -108,6 +122,24 @@ AsyncLLMStreamFn = Callable[..., Any]
 
 DEFAULT_TOOL_CONCURRENCY = 16
 DEFAULT_TOOL_TIMEOUT_SECONDS = float(os.environ.get("TOOL_TIMEOUT_SECONDS", "20"))
+DEFAULT_TOOL_MAX_RETRIES = max(0, int(os.environ.get("TOOL_MAX_RETRIES", "1")))
+DEFAULT_TOOL_RETRY_BASE_SECONDS = max(0.0, float(os.environ.get("TOOL_RETRY_BASE_SECONDS", "0.15")))
+DEFAULT_TOOL_CIRCUIT_FAILURE_THRESHOLD = max(
+    1, int(os.environ.get("TOOL_CIRCUIT_FAILURE_THRESHOLD", "5")))
+DEFAULT_TOOL_CIRCUIT_RECOVERY_SECONDS = max(
+    0.0, float(os.environ.get("TOOL_CIRCUIT_RECOVERY_SECONDS", "30")))
+
+# Only safe, read-only built-ins retry automatically. Tools requiring an
+# approval may have side effects and must not be replayed after a timeout.
+_READ_ONLY_TOOL_NAMES = frozenset({
+    "get_time", "calculator", "list_files", "search_files", "search_text",
+    "read_file", "read_file_range", "read_json", "file_info", "git_status",
+    "git_diff", "read_artifact", "search_artifact", "job_list", "job_output",
+})
+_TRANSIENT_ERROR_MARKERS = (
+    "\u5de5\u5177\u6267\u884c\u8d85\u65f6", "timeout", "timed out", "temporarily unavailable",
+    "connection", "network", "sqlite", "database is locked", "resource busy",
+)
 
 # Tool schemas intentionally keep optional defaulted fields optional so normal
 # OpenAI-compatible function calling stays compact.  Before execution we add
@@ -153,9 +185,31 @@ _TERMINAL_ACTION_TOOLS = frozenset({"run_tests"})
 
 
 def _explicit_workspace_file(query: str) -> Optional[str]:
-    """Return a workspace-relative file path that appears literally in text."""
-    match = _EXPLICIT_FILE_PATH_RE.search(query or "")
-    return match.group(1).replace("\\", "/") if match else None
+    """Return a safe workspace-relative source path stated literally by the user.
+
+    The regular expression deliberately recognizes familiar source-file syntax,
+    but matching alone is not a path-security decision.  Reject URL fragments,
+    query/anchor syntax and traversal before a candidate can influence tool
+    arguments.
+    """
+    text = query or ""
+    for match in _EXPLICIT_FILE_PATH_RE.finditer(text):
+        candidate = match.group(1).replace("\\", "/")
+        start = match.start(1)
+        # The regex can begin in the middle of a dotted URL hostname
+        # (for example matching ``com/path/file.py``).  Inspect the current
+        # non-whitespace token rather than only a fixed-length suffix.
+        token_start = max(text.rfind(char, 0, start) for char in " \t\r\n([{<") + 1
+        prefix = text[token_start:start].casefold()
+        if "://" in prefix or "www." in prefix:
+            continue
+        if any(marker in candidate for marker in ("://", "?", "#")):
+            continue
+        path = PurePosixPath(candidate)
+        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+            continue
+        return str(path)
+    return None
 
 
 def _explicit_timeout_seconds(query: str) -> Optional[int]:
@@ -495,6 +549,14 @@ class _Guardrails:
         return self.stop_reason is not None
 
 
+class _SyncToolTimeout(TimeoutError):
+    """Internal marker preserving tool-timeout wording across retries."""
+
+
+class _ReturnedToolError(RuntimeError):
+    """Internal marker for a handler that reports an error as text."""
+
+
 class QueryEngine:
     """
     Agent 核心引擎。
@@ -516,6 +578,16 @@ class QueryEngine:
         context_window: int = 32768,
         tool_concurrency: int = DEFAULT_TOOL_CONCURRENCY,
         tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
+        tool_max_retries: int = DEFAULT_TOOL_MAX_RETRIES,
+        tool_retry_base_seconds: float = DEFAULT_TOOL_RETRY_BASE_SECONDS,
+        tool_circuit_failure_threshold: int = DEFAULT_TOOL_CIRCUIT_FAILURE_THRESHOLD,
+        tool_circuit_recovery_seconds: float = DEFAULT_TOOL_CIRCUIT_RECOVERY_SECONDS,
+        tool_circuit_manager: Optional[ToolCircuitManager] = None,
+        metrics: Optional[Any] = None,
+        artifact_store: Optional[ArtifactStore] = None,
+        event_log: Optional[SessionEventLog] = None,
+        permission_policy: Optional[PermissionPolicy] = None,
+        file_observations: Optional[FileObservationStore] = None,
     ) -> None:
         self.system_prompt_base = system_prompt
         self.tool_registry = tool_registry or ToolRegistry()
@@ -529,6 +601,19 @@ class QueryEngine:
         self.context_window = context_window
         self.tool_concurrency = max(1, tool_concurrency)
         self.tool_timeout_seconds = max(0.01, float(tool_timeout_seconds))
+        self.tool_max_retries = max(0, int(tool_max_retries))
+        self.tool_retry_base_seconds = max(0.0, float(tool_retry_base_seconds))
+        self._tool_circuits = tool_circuit_manager or ToolCircuitManager(
+            failure_threshold=max(1, int(tool_circuit_failure_threshold)),
+            recovery_timeout=max(0.0, float(tool_circuit_recovery_seconds)),
+        )
+        self._metrics = metrics or (_get_obs_metrics() if _get_obs_metrics else None)
+        # Optional durable runtime services. They are injected by the application;
+        # keeping them optional preserves lightweight library and unit-test use.
+        self._artifact_store = artifact_store
+        self._event_log = event_log
+        self.permission_policy = permission_policy or PermissionPolicy()
+        self.file_observations = file_observations or FileObservationStore()
         # A timed-out Python thread cannot be safely killed. Keep a bounded
         # shared pool so request recovery is prompt and stranded work is limited.
         self._sync_tool_executor = ThreadPoolExecutor(
@@ -714,7 +799,7 @@ class QueryEngine:
     # ── sync public API (兼容) ────────────────────────────────
 
     def run(self, user_input: str, max_tool_calls: int = 10, context=None,
-            session: Optional[SessionState] = None) -> str:
+            session: Optional[SessionState] = None, session_id: str = "") -> str:
         """处理一条用户消息，返回完整回复。context 可为 dict 或 QueryContext。"""
         ctx = (QueryContext.from_dict(context) if isinstance(context, dict)
                else (context or QueryContext()))
@@ -723,19 +808,19 @@ class QueryEngine:
                         data={"user_input": user_input, "context": ctx})
         user_input = self._scan_user_input(user_input)
         sess.append(Message.user(user_input))
-        result = self._loop(max_tool_calls, context=ctx, session=sess)
+        result = self._loop(max_tool_calls, context=ctx, session=sess, session_id=session_id)
         self.hooks.fire(HookPoint.QUERY_END, data={"result": result})
         return result
 
     def run_stream(self, user_input: str, max_tool_calls: int = 10,
-                   session: Optional[SessionState] = None
+                   session: Optional[SessionState] = None, session_id: str = ""
                    ) -> Generator[str, None, None]:
         """同步伪流式 (兼容): 先跑完工具轮次，最后逐字输出 SSE 格式。"""
         sess = session or self.session
         self.hooks.fire(HookPoint.QUERY_START, data={"user_input": user_input})
         user_input = self._scan_user_input(user_input)
         sess.append(Message.user(user_input))
-        self._loop(max_tool_calls, capture_last=True, session=sess)
+        self._loop(max_tool_calls, capture_last=True, session=sess, session_id=session_id)
         if self._llm_stream_fn:
             yield from self._llm_stream_fn()
         else:
@@ -749,11 +834,13 @@ class QueryEngine:
 
     async def arun(self, query: str, session: Optional[SessionState] = None,
                    ctx: Optional[QueryContext] = None,
-                   max_tool_calls: int = 10) -> Dict[str, Any]:
+                   max_tool_calls: int = 10, session_id: str = "",
+                   llm_idle_timeout: Optional[float] = None) -> Dict[str, Any]:
         """异步执行,返回 {"content","stop_reason","usage","iterations"}。"""
         result: Dict[str, Any] = {}
         async for event in self.arun_stream(query, session=session, ctx=ctx,
-                                            max_tool_calls=max_tool_calls,
+                                            max_tool_calls=max_tool_calls, session_id=session_id,
+                                            llm_idle_timeout=llm_idle_timeout,
                                             _collect_only=True):
             if event.get("done"):
                 result = event
@@ -772,6 +859,7 @@ class QueryEngine:
                           ctx: Optional[QueryContext] = None,
                           max_tool_calls: int = 10,
                           session_id: str = "",
+                          llm_idle_timeout: Optional[float] = None,
                           _collect_only: bool = False
                           ) -> AsyncIterator[Dict[str, Any]]:
         """真流式: 每轮 LLM 增量 yield token,工具执行 yield progress,最后 done 帧。
@@ -792,6 +880,7 @@ class QueryEngine:
 
         self.hooks.fire(HookPoint.QUERY_START,
                         data={"user_input": query, "context": ctx})
+        self._record_runtime_event(session_id, "query.started", {"request_id": ctx.request_id}, ctx.request_id)
         query = self._scan_user_input(query)
         sess.append(Message.user(query))
 
@@ -828,22 +917,40 @@ class QueryEngine:
                 content, tool_calls, usage = "", [], {}
                 try:
                     if self._async_stream_fn is not None:
-                        async for ev in self._acall_stream(messages, schemas, cand):
-                            etype = ev.get("type")
-                            if etype == "delta":
-                                piece = ev.get("content") or ""
-                                if piece:
-                                    content += piece
-                                    if not _collect_only:
-                                        emitted = True
-                                        yield {"token": piece}
-                            elif etype == "final":
-                                content = ev.get("content") or content
-                                tool_calls = ev.get("tool_calls") or []
-                                usage = ev.get("usage") or {}
+                        if llm_idle_timeout is not None:
+                            async for ev in self._acall_stream(
+                                    messages, schemas, cand,
+                                    idle_timeout=llm_idle_timeout):
+                                etype = ev.get("type")
+                                if etype == "delta":
+                                    piece = ev.get("content") or ""
+                                    if piece:
+                                        content += piece
+                                        if not _collect_only:
+                                            emitted = True
+                                            yield {"token": piece}
+                                elif etype == "final":
+                                    content = ev.get("content") or content
+                                    tool_calls = ev.get("tool_calls") or []
+                                    usage = ev.get("usage") or {}
+                        else:
+                            async for ev in self._acall_stream(messages, schemas, cand):
+                                etype = ev.get("type")
+                                if etype == "delta":
+                                    piece = ev.get("content") or ""
+                                    if piece:
+                                        content += piece
+                                        if not _collect_only:
+                                            emitted = True
+                                            yield {"token": piece}
+                                elif etype == "final":
+                                    content = ev.get("content") or content
+                                    tool_calls = ev.get("tool_calls") or []
+                                    usage = ev.get("usage") or {}
                     else:
                         content, tool_calls, usage = await self._acall_llm(
-                            messages, schemas, cand)
+                            messages, schemas, cand,
+                            idle_timeout=llm_idle_timeout)
                         if content and not _collect_only:
                             emitted = True
                             yield {"token": content}
@@ -947,7 +1054,7 @@ class QueryEngine:
                         "progress": f"tool:{tc.name}",
                         "tool_call": {"name": tc.name, "arguments": tc.arguments},
                     }
-                result = await self._aexecute_tool(tc, semaphore)
+                result = await self._aexecute_tool(tc, semaphore, session_id=session_id, trace_id=ctx.request_id)
                 executed_tool_results[fingerprint] = result
                 is_error = self._is_tool_error(result)
                 guard.record_tool_result(tc.name, result, is_error)
@@ -1001,6 +1108,10 @@ class QueryEngine:
                 "threats": _output_scan.threats,
             },
         })
+        self._record_runtime_event(session_id, "query.completed", {
+            "stop_reason": stop_reason, "stop_detail": stop_detail,
+            "tokens_used": guard.tokens_used, "iterations": iteration,
+        }, ctx.request_id)
         yield {
             "done": True,
             "session_id": session_id,
@@ -1013,75 +1124,230 @@ class QueryEngine:
             "fallback_reason": ctx.metadata.get("fallback_reason"),
         }
 
+    def _record_runtime_event(self, session_id: str, event_type: str, payload: Dict[str, Any], trace_id: str = "") -> None:
+        """Best-effort append-only diagnostics; never impact an agent reply."""
+        if self._event_log is None:
+            return
+        try:
+            self._event_log.append(session_id or "default", event_type, payload, trace_id=trace_id)
+        except Exception:  # pragma: no cover - diagnostics must not break inference
+            logger.debug("session event write failed", exc_info=True)
+
+    @staticmethod
+    def _error_payload(error: str) -> Dict[str, Any]:
+        info: ToolErrorInfo = classify_tool_error(error)
+        return {
+            "error": error,
+            "error_code": info.code,
+            "error_category": info.category,
+            "retryable": info.retryable,
+            "circuit_trackable": info.circuit_trackable,
+            "recovery_action": info.recovery_action,
+        }
+
+    def _retain_tool_result(self, result: Any, tc: ToolCall, session_id: str, trace_id: str) -> Any:
+        """Bound context growth by spilling only successful string results."""
+        if self._artifact_store is None or not isinstance(result, str):
+            return result
+        try:
+            preview, record = self._artifact_store.retain(result, session_id or "default", tc.name)
+        except Exception:  # pragma: no cover - a store outage must not hide tool output
+            logger.warning("tool result retention failed for %s", tc.name, exc_info=True)
+            return result
+        if record is not None:
+            self._record_runtime_event(session_id, "tool.result_spilled", {
+                "tool_name": tc.name, "artifact_id": record.artifact_id,
+                "size_bytes": record.size_bytes,
+            }, trace_id)
+            self._record_tool_metric("tool_artifacts_created", {"tool": tc.name})
+        return preview
+
+    @staticmethod
+    def _execution_params(tool_name: str, params: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+        """Inject server-only context into handlers that need session isolation."""
+        if tool_name not in {"read_artifact", "search_artifact", "job_list", "job_output", "job_cancel"}:
+            return params
+        enriched = dict(params)
+        enriched["_session_id"] = session_id or "default"
+        return enriched
+
     # ── async internals ──────────────────────────────────────
 
-    async def _acall_llm(self, messages, schemas, model):
+    async def _acall_llm(self, messages, schemas, model, idle_timeout=None):
         try:
-            out = await self._async_call_fn(messages, schemas, model=model)
+            if idle_timeout is not None:
+                out = await self._async_call_fn(
+                    messages, schemas, model=model, idle_timeout=idle_timeout)
+            else:
+                out = await self._async_call_fn(messages, schemas, model=model)
         except TypeError:
-            out = await self._async_call_fn(messages, schemas)
+            if idle_timeout is not None:
+                out = await self._async_call_fn(messages, schemas, idle_timeout=idle_timeout)
+            else:
+                out = await self._async_call_fn(messages, schemas)
         if isinstance(out, tuple) and len(out) == 3:
             return out
         raise RuntimeError("achat 函数必须返回 (content, tool_calls, usage) 三元组")
 
-    def _acall_stream(self, messages, schemas, model):
+    def _acall_stream(self, messages, schemas, model, idle_timeout=None):
+        if idle_timeout is not None:
+            try:
+                return self._async_stream_fn(
+                    messages, schemas, model=model, idle_timeout=idle_timeout)
+            except TypeError:
+                return self._async_stream_fn(messages, schemas, idle_timeout=idle_timeout)
         try:
             return self._async_stream_fn(messages, schemas, model=model)
         except TypeError:
             return self._async_stream_fn(messages, schemas)
 
-    async def _aexecute_tool(self, tc: ToolCall, semaphore: asyncio.Semaphore) -> str:
-        _hdata = {"tool_name": tc.name, "arguments": tc.arguments}
-        self.hooks.fire(HookPoint.TOOL_CALL_BEFORE, data=_hdata)
+    @staticmethod
+    def _is_transient_tool_error(error: str) -> bool:
+        """Classify temporary dependency failures without treating input errors as transient."""
+        normalized = (error or "").lower()
+        return any(marker in normalized for marker in _TRANSIENT_ERROR_MARKERS)
+
+    def _tool_circuit_tracking_allowed(
+        self, tool_name: str, definition: Optional[Any], error: str,
+    ) -> bool:
+        """Only safe transient read-only failures contribute to the shared circuit."""
+        info = classify_tool_error(error)
+        return (
+            tool_name in _READ_ONLY_TOOL_NAMES
+            and getattr(definition, "permission_level", "allow") == "allow"
+            and info.circuit_trackable
+        )
+
+    def _tool_retry_allowed(self, tool_name: str, definition: Optional[Any], error: str) -> bool:
+        """Retry only safe, transient failures; never retry invalid or denied calls."""
+        return self.tool_max_retries > 0 and self._tool_circuit_tracking_allowed(
+            tool_name, definition, error,
+        )
+
+    @staticmethod
+    def _tool_retry_delay(attempt: int, base_seconds: float) -> float:
+        """Small bounded exponential backoff plus jitter for interactive work."""
+        return min(1.0, base_seconds * (2 ** attempt) + random.uniform(0.0, 0.05))
+
+    def _record_tool_metric(self, name: str, labels: Optional[Dict[str, str]] = None,
+                            duration_ms: Optional[float] = None) -> None:
+        if self._metrics is None:
+            return
+        try:
+            self._metrics.increment_counter(name, labels=labels)
+            if duration_ms is not None:
+                self._metrics.observe_histogram("tool_execution_latency", duration_ms, labels=labels)
+        except Exception:  # pragma: no cover
+            logger.debug("tool metric recording failed", exc_info=True)
+
+    def tool_resilience_snapshot(self) -> Dict[str, Dict[str, Any]]:
+        """Return shared per-tool circuit state for health and dashboards."""
+        return {
+            name: {"state": item.state, "consecutive_failures": item.consecutive_failures}
+            for name, item in self._tool_circuits.snapshots().items()
+        }
+
+    def _tool_preflight_error(self, tc: ToolCall, session_id: str = "") -> tuple[Optional[Any], Optional[Any], Optional[str]]:
         handler = self.tool_registry.get_handler(tc.name)
         if handler is None:
-            error_msg = f"错误:未知工具:{tc.name}"
-            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
-            return error_msg
-
-        # ── permission gate (async mirror of _execute_tool) ─────
+            return None, None, f"\u9519\u8bef:\u672a\u77e5\u5de5\u5177:{tc.name}"
         definition = self.tool_registry.get_definition(tc.name)
-        perm_level = getattr(definition, "permission_level", "allow") if definition else "allow"
-        if perm_level == "deny":
-            error_msg = f"工具被拒绝(权限级别: deny): {tc.name}"
-            logger.warning("Tool %s blocked by permission_level=deny (async)", tc.name)
-            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
-            return error_msg
-        if perm_level == "ask":
-            perm_results = self.hooks.fire(
-                HookPoint.TOOL_PERMISSION_REQUEST,
-                data={**_hdata, "permission_level": perm_level},
-            )
-            for _key, val in perm_results.items():
-                if isinstance(val, dict) and val.get("allowed") is False:
-                    reason = val.get("reason", "权限被拒绝")
-                    error_msg = f"工具被用户拒绝: {tc.name} — {reason}"
-                    logger.info("Tool %s denied by permission hook (async): %s", tc.name, reason)
-                    self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
-                    return error_msg
-
+        permission = getattr(definition, "permission_level", "allow") if definition else "allow"
+        policy_allowed, policy_reason = self.permission_policy.decision(tc.name, permission)
+        has_explicit_policy = tc.name in self.permission_policy.overrides or bool(self.permission_policy.allow_patterns)
+        if permission == "deny" or (has_explicit_policy and not policy_allowed):
+            logger.warning("Tool %s blocked by permission policy: %s", tc.name, policy_reason)
+            return handler, definition, f"工具被权限策略拒绝: {tc.name} - {policy_reason}"
+        if permission == "ask":
+            results = self.hooks.fire(HookPoint.TOOL_PERMISSION_REQUEST, data={
+                "tool_name": tc.name, "arguments": tc.arguments, "permission_level": permission,
+            })
+            for _key, value in results.items():
+                if isinstance(value, dict) and value.get("allowed") is False:
+                    reason = value.get("reason", "\u6743\u9650\u88ab\u62d2\u7edd")
+                    return handler, definition, f"\u5de5\u5177\u88ab\u7528\u6237\u62d2\u7edd: {tc.name} - {reason}"
         params = tc.arguments if isinstance(tc.arguments, dict) else {}
-        # ── schema validation (defense-in-depth) ─────────────
         validation_err = self._validate_tool_args(tc.name, params, definition)
         if validation_err:
-            logger.warning("Tool %s args failed schema validation (async): %s",
-                           tc.name, validation_err)
-            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": validation_err})
-            return validation_err
-        try:
-            async with semaphore:
-                operation = handler(params) if asyncio.iscoroutinefunction(handler) else asyncio.to_thread(handler, params)
-                result = await asyncio.wait_for(operation, timeout=self.tool_timeout_seconds)
-            self.hooks.fire(HookPoint.TOOL_CALL_AFTER, data={**_hdata, "result": result})
-            return result
-        except asyncio.TimeoutError:
-            error_msg = f"\u9519\u8bef:\u5de5\u5177\u6267\u884c\u8d85\u65f6 [{tc.name}]: \u8d85\u8fc7 {self.tool_timeout_seconds:.1f} \u79d2"
-            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
+            logger.warning("Tool %s args failed schema validation: %s", tc.name, validation_err)
+            return handler, definition, validation_err
+        return handler, definition, None
+
+    @staticmethod
+    def _tool_circuit_error(tool_name: str, state: str) -> str:
+        return f"\u9519\u8bef:\u5de5\u5177\u7194\u65ad\u4e2d [{tool_name}]: \u5f53\u524d\u72b6\u6001 {state}\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5"
+
+    async def _aexecute_tool(self, tc: ToolCall, semaphore: asyncio.Semaphore,
+                             session_id: str = "", trace_id: str = "") -> str:
+        _hdata = {"tool_name": tc.name, "arguments": tc.arguments}
+        self.hooks.fire(HookPoint.TOOL_CALL_BEFORE, data=_hdata)
+        handler, definition, preflight_error = self._tool_preflight_error(tc)
+        if preflight_error:
+            error_data = self._error_payload(preflight_error)
+            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, **error_data})
+            self._record_runtime_event(session_id, "tool.rejected", {"tool_name": tc.name, **error_data}, trace_id)
+            self._record_tool_metric("tool_calls", {"tool": tc.name, "outcome": "rejected"})
+            return preflight_error
+        allowed, snapshot = self._tool_circuits.allow_request(tc.name)
+        if not allowed:
+            error_msg = self._tool_circuit_error(tc.name, snapshot.state)
+            error_data = self._error_payload(error_msg)
+            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, **error_data, "circuit_state": snapshot.state})
+            self._record_runtime_event(session_id, "tool.circuit_rejected", {"tool_name": tc.name, **error_data, "circuit_state": snapshot.state}, trace_id)
+            self._record_tool_metric("tool_circuit_rejections", {"tool": tc.name, "state": snapshot.state})
             return error_msg
-        except Exception as e:
-            error_msg = f"\u5de5\u5177\u6267\u884c\u5931\u8d25 [{tc.name}]:{type(e).__name__}: {e}"
-            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
+        params = tc.arguments if isinstance(tc.arguments, dict) else {}
+        execution_params = self._execution_params(tc.name, params, session_id)
+        for attempt in range(self.tool_max_retries + 1):
+            started = time.monotonic()
+            try:
+                async with semaphore:
+                    operation = handler(execution_params) if asyncio.iscoroutinefunction(handler) else asyncio.to_thread(handler, execution_params)
+                    result = await asyncio.wait_for(operation, timeout=self.tool_timeout_seconds)
+                elapsed_ms = (time.monotonic() - started) * 1000
+                # Built-in handlers conventionally return a human-readable error
+                # string instead of raising.  Feed those through the same retry /
+                # circuit classification path as raised failures.
+                if isinstance(result, str) and self._is_tool_error(result):
+                    error_msg = result
+                    raise _ReturnedToolError(error_msg)
+                result = self._retain_tool_result(result, tc, session_id, trace_id)
+                self._tool_circuits.record_success(tc.name)
+                self.hooks.fire(HookPoint.TOOL_CALL_AFTER, data={**_hdata, "result": result, "attempt": attempt + 1})
+                self._record_runtime_event(session_id, "tool.completed", {
+                    "tool_name": tc.name, "attempt": attempt + 1,
+                    "duration_ms": round(elapsed_ms, 3),
+                }, trace_id)
+                self._record_tool_metric("tool_calls", {"tool": tc.name, "outcome": "success"}, elapsed_ms)
+                return result
+            except _ReturnedToolError as exc:
+                error_msg = str(exc)
+            except asyncio.TimeoutError:
+                error_msg = f"\u9519\u8bef:\u5de5\u5177\u6267\u884c\u8d85\u65f6 [{tc.name}]: \u8d85\u8fc7 {self.tool_timeout_seconds:.1f} \u79d2"
+            except Exception as exc:
+                error_msg = f"\u5de5\u5177\u6267\u884c\u5931\u8d25 [{tc.name}]:{type(exc).__name__}: {exc}"
+            elapsed_ms = (time.monotonic() - started) * 1000
+            retryable = self._tool_retry_allowed(tc.name, definition, error_msg)
+            if retryable and attempt < self.tool_max_retries:
+                self._record_tool_metric("tool_retries", {"tool": tc.name, "reason": "transient"}, elapsed_ms)
+                await asyncio.sleep(self._tool_retry_delay(attempt, self.tool_retry_base_seconds))
+                continue
+            circuit_trackable = self._tool_circuit_tracking_allowed(tc.name, definition, error_msg)
+            if circuit_trackable:
+                snapshot = self._tool_circuits.record_transient_failure(tc.name)
+                labels = {"tool": tc.name, "outcome": "transient_failure", "circuit_state": snapshot.state}
+            else:
+                self._tool_circuits.release_probe(tc.name)
+                labels = {"tool": tc.name, "outcome": "failure"}
+            error_data = self._error_payload(error_msg)
+            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, **error_data, "attempt": attempt + 1})
+            self._record_runtime_event(session_id, "tool.failed", {
+                "tool_name": tc.name, "attempt": attempt + 1,
+                "duration_ms": round(elapsed_ms, 3), **error_data,
+            }, trace_id)
+            self._record_tool_metric("tool_calls", labels, elapsed_ms)
             return error_msg
+        raise AssertionError("unreachable")
 
     @staticmethod
     def _coerce_tool_calls(tool_calls: List[Any]) -> List[ToolCall]:
@@ -1125,7 +1391,7 @@ class QueryEngine:
 
     def _loop(self, max_tool_calls: int, capture_last: bool = False,
               context: Optional[QueryContext] = None,
-              session: Optional[SessionState] = None) -> str:
+              session: Optional[SessionState] = None, session_id: str = "") -> str:
         sess = session or self.session
         ctx = context or QueryContext()
         guard = _Guardrails(max_tokens_budget=ctx.max_tokens_budget)
@@ -1175,7 +1441,7 @@ class QueryEngine:
             if assistant_msg.tool_calls:
                 sess.append(assistant_msg)
                 for tc in assistant_msg.tool_calls:
-                    result = self._execute_tool(tc)
+                    result = self._execute_tool(tc, session_id=session_id, trace_id=ctx.request_id)
                     is_error = self._is_tool_error(result)
                     guard.record_tool_result(tc.name, result, is_error)
                     sess.append(Message.tool_result(tc.id, result, is_error=is_error))
@@ -1312,65 +1578,80 @@ class QueryEngine:
 
     # ── tool execution (sync) ────────────────────────────────
 
-    def _execute_tool(self, tc: ToolCall) -> str:
+    def _execute_tool(self, tc: ToolCall, session_id: str = "", trace_id: str = "") -> str:
         _hdata = {"tool_name": tc.name, "arguments": tc.arguments}
         self.hooks.fire(HookPoint.TOOL_CALL_BEFORE, data=_hdata)
-        handler = self.tool_registry.get_handler(tc.name)
-        if handler is None:
-            error_msg = f"错误:未知工具:{tc.name}"
-            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
+        handler, definition, preflight_error = self._tool_preflight_error(tc)
+        if preflight_error:
+            error_data = self._error_payload(preflight_error)
+            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, **error_data})
+            self._record_runtime_event(session_id, "tool.rejected", {"tool_name": tc.name, **error_data}, trace_id)
+            self._record_tool_metric("tool_calls", {"tool": tc.name, "outcome": "rejected"})
+            return preflight_error
+        allowed, snapshot = self._tool_circuits.allow_request(tc.name)
+        if not allowed:
+            error_msg = self._tool_circuit_error(tc.name, snapshot.state)
+            error_data = self._error_payload(error_msg)
+            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, **error_data, "circuit_state": snapshot.state})
+            self._record_runtime_event(session_id, "tool.circuit_rejected", {"tool_name": tc.name, **error_data, "circuit_state": snapshot.state}, trace_id)
+            self._record_tool_metric("tool_circuit_rejections", {"tool": tc.name, "state": snapshot.state})
             return error_msg
-
-        # ── permission gate ─────────────────────────────────
-        definition = self.tool_registry.get_definition(tc.name)
-        perm_level = getattr(definition, "permission_level", "allow") if definition else "allow"
-        if perm_level == "deny":
-            error_msg = f"工具被拒绝(权限级别: deny): {tc.name}"
-            logger.warning("Tool %s blocked by permission_level=deny", tc.name)
-            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
-            return error_msg
-        if perm_level == "ask":
-            perm_results = self.hooks.fire(
-                HookPoint.TOOL_PERMISSION_REQUEST,
-                data={**_hdata, "permission_level": perm_level},
-            )
-            # Any hook handler returning {"allowed": false} blocks execution
-            for _key, val in perm_results.items():
-                if isinstance(val, dict) and val.get("allowed") is False:
-                    reason = val.get("reason", "权限被拒绝")
-                    error_msg = f"工具被用户拒绝: {tc.name} — {reason}"
-                    logger.info("Tool %s denied by permission hook: %s", tc.name, reason)
-                    self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
-                    return error_msg
-
-        try:
-            params = tc.arguments if isinstance(tc.arguments, dict) else {}
-            validation_err = self._validate_tool_args(tc.name, params, definition)
-            if validation_err:
-                logger.warning("Tool %s args failed schema validation: %s", tc.name, validation_err)
-                self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": validation_err})
-                return validation_err
-            future = self._sync_tool_executor.submit(handler, params)
+        params = tc.arguments if isinstance(tc.arguments, dict) else {}
+        execution_params = self._execution_params(tc.name, params, session_id)
+        for attempt in range(self.tool_max_retries + 1):
+            started = time.monotonic()
             try:
-                result = future.result(timeout=self.tool_timeout_seconds)
-            except FutureTimeoutError:
-                cancelled = future.cancel()
-                error_msg = (
-                    f"\u9519\u8bef:\u5de5\u5177\u6267\u884c\u8d85\u65f6 [{tc.name}]: "
-                    f"\u8d85\u8fc7 {self.tool_timeout_seconds:.1f} \u79d2"
-                    f"\uff08\u5df2\u53d6\u6d88\u6392\u961f\u4efb\u52a1={cancelled}\uff1b"
-                    "\u82e5\u5df2\u5f00\u59cb\u6267\u884c\uff0c\u5c06\u5728\u540e\u53f0\u81ea\u884c\u7ed3\u675f\uff09"
-                )
-                self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
-                return error_msg
-            self.hooks.fire(HookPoint.TOOL_CALL_AFTER, data={**_hdata, "result": result})
-            return result
-        except Exception as e:
-            error_msg = f"\u5de5\u5177\u6267\u884c\u5931\u8d25 [{tc.name}]:{type(e).__name__}: {e}"
-            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg})
+                future = self._sync_tool_executor.submit(handler, execution_params)
+                try:
+                    result = future.result(timeout=self.tool_timeout_seconds)
+                except FutureTimeoutError:
+                    cancelled = future.cancel()
+                    raise _SyncToolTimeout(
+                        f"\u9519\u8bef:\u5de5\u5177\u6267\u884c\u8d85\u65f6 [{tc.name}]: \u8d85\u8fc7 {self.tool_timeout_seconds:.1f} \u79d2"
+                        f"(\u5df2\u53d6\u6d88\u6392\u961f\u4efb\u52a1={cancelled}\uff1b\u82e5\u5df2\u5f00\u59cb\u6267\u884c\uff0c\u5c06\u5728\u540e\u53f0\u81ea\u884c\u7ed3\u675f)"
+                    )
+                elapsed_ms = (time.monotonic() - started) * 1000
+                # See async path: handlers that return an error string still
+                # participate in transient retry and circuit accounting.
+                if isinstance(result, str) and self._is_tool_error(result):
+                    raise _ReturnedToolError(result)
+                result = self._retain_tool_result(result, tc, session_id, trace_id)
+                self._tool_circuits.record_success(tc.name)
+                self.hooks.fire(HookPoint.TOOL_CALL_AFTER, data={**_hdata, "result": result, "attempt": attempt + 1})
+                self._record_runtime_event(session_id, "tool.completed", {
+                    "tool_name": tc.name, "attempt": attempt + 1,
+                    "duration_ms": round(elapsed_ms, 3),
+                }, trace_id)
+                self._record_tool_metric("tool_calls", {"tool": tc.name, "outcome": "success"}, elapsed_ms)
+                return result
+            except _ReturnedToolError as exc:
+                error_msg = str(exc)
+            except _SyncToolTimeout as exc:
+                error_msg = str(exc)
+            except Exception as exc:
+                error_msg = f"\u5de5\u5177\u6267\u884c\u5931\u8d25 [{tc.name}]:{type(exc).__name__}: {exc}"
+            elapsed_ms = (time.monotonic() - started) * 1000
+            retryable = self._tool_retry_allowed(tc.name, definition, error_msg)
+            if retryable and attempt < self.tool_max_retries:
+                self._record_tool_metric("tool_retries", {"tool": tc.name, "reason": "transient"}, elapsed_ms)
+                time.sleep(self._tool_retry_delay(attempt, self.tool_retry_base_seconds))
+                continue
+            circuit_trackable = self._tool_circuit_tracking_allowed(tc.name, definition, error_msg)
+            if circuit_trackable:
+                snapshot = self._tool_circuits.record_transient_failure(tc.name)
+                labels = {"tool": tc.name, "outcome": "transient_failure", "circuit_state": snapshot.state}
+            else:
+                self._tool_circuits.release_probe(tc.name)
+                labels = {"tool": tc.name, "outcome": "failure"}
+            error_data = self._error_payload(error_msg)
+            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, **error_data, "attempt": attempt + 1})
+            self._record_runtime_event(session_id, "tool.failed", {
+                "tool_name": tc.name, "attempt": attempt + 1,
+                "duration_ms": round(elapsed_ms, 3), **error_data,
+            }, trace_id)
+            self._record_tool_metric("tool_calls", labels, elapsed_ms)
             return error_msg
-
-    # ── system prompt ────────────────────────────────────────
+        raise AssertionError("unreachable")
 
     def set_user_background(self, background: str,
                             session: Optional[SessionState] = None) -> None:

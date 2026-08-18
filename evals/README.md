@@ -12,6 +12,8 @@ SimpleAgent 不应只评测 RAG 的 Recall/Precision 和生成质量。真正上
 - `datasets/reliability.jsonl`：LLM/工具超时、坏 JSON、重复提交、重启恢复。
 - `datasets/performance.jsonl`：TTFT、E2E 延迟、token、重试率和预算护栏。
 
+harness.py 提供可复用的本地评测数据结构、确定性评分器和 LLM Judge 封装；它与 pytest 回归测试分离，避免把评测数据混入 	ests/。
+
 ## 运行
 
 先只检查数据集格式（不启动模型）：

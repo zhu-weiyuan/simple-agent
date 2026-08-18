@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>俄罗斯方块 · Tetris</title>
+<style>
+  :root {
+    --bg: #0b1020;
+    --panel: #141b2f;
+    --line: rgba(255, 255, 255, 0.08);
+    --text: #e6ebff;
+    --muted: #8a97c4;
+    --accent: #4f8cff;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background: radial-gradient(1200px 600px at 50% -10%, #1b2340 0%, var(--bg) 55%);
+    color: var(--text);
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    overflow: hidden;
+  }
+
+  .app {
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 28px;
+    padding: 24px;
+    user-select: none;
+  }
+
+  /* ---------- Board ---------- */
+  .board-wrap {
+    position: relative;
+    border-radius: 16px;
+    padding: 10px;
+    background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(0,0,0,.15));
+    box-shadow: 0 24px 60px rgba(0,0,0,.55), inset 0 0 0 1px var(--line);
+  }
+
+  canvas {
+    display: block;
+    border-radius: 10px;
+    background: #070b18;
+    image-rendering: pixelated;
+  }
+
+  /* ---------- Side panel ---------- */
+  .panel {
+    width: 250px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .card {
+    background: var(--panel);
+    border-radius: 14px;
+    padding: 16px 18px;
+    box-shadow: inset 0 0 0 1px var(--line), 0 12px 30px rgba(0,0,0,.35);
+  }
+
+  .title {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .title span.dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 12px var(--accent);
+  }
+
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-top: 8px;
+  }
+  .stat-row .label { color: var(--muted); font-size: 13px; }
+  .stat-row .value { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 20px; }
+
+  /* Next piece preview */
+  #nextCanvas {
+    display: block;
+    margin: 10px auto 0;
+    background: rgba(0,0,0,.3);
+    border-radius: 8px;
+  }
+
+  .hint { color: var(--muted); font-size: 12.5px; line-height: 1.7; margin-top: 6px; }
+
+  /* Buttons */
+  .btns { display: flex; gap: 10px; }
+  button {
+    flex: 1;
+    padding: 12px 0;
+    border: none;
+    border-radius: 10px;
+    font-weight: 700;
+    letter-spacing: .5px;
+    cursor: pointer;
+    transition: transform .12s, filter .12s;
+    color: #fff;
+  }
+  button:hover { filter: brightness(1.1); }
+  button:active { transform: translateY(1px); }
+
+  #startBtn { background: linear-gradient(135deg, #4f8cff, #7a5cff); }
+  #pauseBtn  { background: #2a3558; color: var(--text); }
+  #restartBtn{ background: #2a3558; color: var(--text); }
+
+  /* ---------- Overlays ---------- */
+  .overlay {
+    position: absolute;
+    inset: 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    background: rgba(5, 8, 18, .72);
+    backdrop-filter: blur(6px);
+    border-radius: 10px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .25s;
+  }
+  .overlay.show { opacity: 1; pointer-events: auto; }
+
+  .overlay h2 { font-size: 30px; letter-spacing: 2px; }
+  .overlay p  { color: var(--muted); font-size: 14px; }
+
+  .keys {
+    display: grid;
+    grid-template-columns: auto auto;
+    gap: 6px 14px;
+    margin-top: 4px;
+    text-align: left;
+  }
+  .keys div { font-size: 13px; color: var(--muted); }
+  .keys b { color: var(--text); font-weight: 600; }
+
+  @media (max-width: 720px) {
+    .app { flex-direction: column; gap: 18px; padding: 14px; }
+    .panel { width: 100%; max-width: 320px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="board-wrap">
+    <canvas id="game" width="320" height="480"></canvas>
+
+    <div id="overlay" class="overlay">
+      <h2 id="ovTitle">俄罗斯方块</h2>
+      <p id="ovSub">按 开始游戏 或按 Enter 开始</p>
+      <div class="keys">
+        <div><b>← →</b> 左右移动</div>
+        <div><b>↓</b> 加速下落</div>
+        <div><b>↑ / W</b> 旋转</div>
+        <div><b>Space</b> 硬降</div>
+        <div><b>P / Esc</b> 暂停</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="card">
+      <div class="title"><span class="dot"></span>TETRIS</div>
+      <div class="hint" style="margin-top:10px;">经典消行玩法，填满整行即可消除。</div>
+    </div>
+
+    <div class="card">
+      <div class="stat-row"><span class="label">得分</span><span class="value" id="score">0</span></div>
+      <div class="stat-row"><span class="label">等级</span><span class="value" id="level">1</span></div>
+      <div class="stat-row"><span class="label">行数</span><span class="value" id="lines">0</span></div>
+    </div>
+
+    <div class="card">
+      <div class="stat-row"><span class="label">下一个</span></div>
+      <canvas id="nextCanvas" width="120" height="80"></canvas>
+    </div>
+
+    <div class="btns">
+      <button id="startBtn">开始游戏</button>
+      <button id="pauseBtn">暂停</button>
+      <button id="restartBtn">重开</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------------- Constants ----------------
+  const COLS = 10, ROWS = 20;
+  const CELL = 24;                       // px per cell on main canvas
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  const nextCanvas = document.getElementById("nextCanvas");
+  const nctx = nextCanvas.getContext("2d");
+
+  // Standard SRS pieces stored in a 4x4 grid (row-major).
+  const PIECES = {
+    I: [
+      [0,0,0,0],
+      [1,1,1,1],
+      [0,0,0,0],
+      [0,0,0,0],
+    ],
+    J: [
+      [1,1,1,0],
+      [0,1,0,0],
+      [0,0,0,0],
+      [0,0,0,0],
+    ],
+    L: [
+      [1,1,1,0],
+      [0,0,1,0],
+      [0,0,0,0],
+      [0,0,0,0],
+    ],
+    O: [
+      [1,1],
+      [1,1],
+    ],
+    S: [
+      [0,1,1],
+      [1,1,0],
+    ],
+    T: [
+      [0,1,0],
+      [1,1,1],
+    ],
+    Z: [
+      [1,1,0],
+      [0,1,1],
+    ],
+  };
+
+  // Each piece is stored as a flat list of {x,y} cells in its own local frame.
+  const COLORS = {
+    I: "#4fc8ff",
+    J: "#7a5cff",
+    L: "#ff9f2e",
+    O: "#ffe14d",
+    S: "#3ee6a0",
+    T: "#c05bff",
+    Z: "#ff5b6b",
+  };
+
+  // ---------------- State ----------------
+  let grid, score, level, lines, spawnBag;
+  let piece, nextPiece;
+  let dropCounter = 0, lastTime = 0;
+  let running = false, paused = false, gameOver = false;
+  let rafId = null;
+
+  const scoreEl = document.getElementById("score");
+  const levelEl = document.getElementById("level");
+  const linesEl = document.getElementById("lines");
+  const overlay = document.getElementById("overlay");
+  const ovTitle = document.getElementById("ovTitle");
+  const ovSub = document.getElementById("ovSub");
+
+  // ---------------- Piece helpers ----------------
+  function makePiece(type) {
+    const mat = PIECES[type];
+    const cells = [];
+    for (let r = 0; r < mat.length; r++) {
+      for (let c = 0; c < mat[r].length; c++) {
+        if (mat[r][c]) cells.push({ x: c, y: r });
+      }
+    }
+    return { type, cells };
+  }
+
+  // Rotate a piece's cell list by 90° in the given direction using matrix rotation.
+  // dir = 1 for clockwise, -1 for counter-clockwise.
+  function rotateCells(cells, dir) {
+    // Compute bounding box dimensions of the current shape.
+    let maxX = 0, maxY = 0;
+    for (const c of cells) {
+      if (c.x > maxX) maxX = c.x;
+      if (c.y > maxY) maxY = c.y;
+    }
+    const w = maxX + 1, h = maxY + 1;
+
+    // Rotate each cell within the w x h box.
+    // Clockwise:   (x, y) -> (h - 1 - y, x)
+    // Counter-ckw: (x, y) -> (y, w - 1 - x)
+    const rotated = cells.map(({ x, y }) => {
+      if (dir > 0) return { x: h - 1 - y, y: x };
+      return { x: y, y: w - 1 - x };
+    });
+
+    // Normalize to start at (0,0).
+    let minX = Infinity, minY = Infinity;
+    for (const c of rotated) {
+      if (c.x < minX) minX = c.x;
+      if (c.y < minY) minY = c.y;
+    }
+    return rotated.map(({ x, y }) => ({ x: x - minX, y: y - minY }));
+  }
+
+  // ---------------- Board helpers ----------------
+  function emptyGrid() {
+    return Array.from({ length: ROWS }, () => Array(COLS).fill(null));
+  }
+
+  function inBounds(x, y) {
+    return x >= 0 && x < COLS && y >= 0 && y < ROWS;
+  }
+
+  function collides(cells, ox, oy) {
+    for (const c of cells) {
+      const nx = c.x + ox, ny = c.y + oy;
+      if (!inBounds(nx, ny)) return true;
+      if (grid[ny][nx]) return true;
+    }
+    return false;
+  }
+
+  function bagNext() {
+    if (spawnBag.length === 0) {
+      const keys = Object.keys(PIECES);
+      spawnBag = keys.slice().sort(() => Math.random());
+    }
+    const type = spawnBag.shift();
+    return makePiece(type);
+  }
+
+  function spawn() {
+    piece = nextPiece || bagNext();
+    // Center horizontally near top.
+    let minX = Infinity;
+    for (const c of piece.cells) if (c.x < minX) minX = c.x;
+    const width = piece.cells.reduce((w, c) => Math.max(w, c.x - minX), 0) + 1;
+    piece.originX = Math.floor((COLS - width) / 2) - minX;
+    piece.originY = -1; // starts one row above visible area (top of grid is row 0)
+    nextPiece = bagNext();
+    drawNext();
+
+    // Game over if the new piece collides with itself at spawn.
+    if (collides(piece.cells, piece.originX, piece.originY)) {
+      endGame();
+    }
+  }
+
+  function lock() {
+    for (const c of piece.cells) {
+      const x = c.x + piece.originX, y = c.y + piece.originY;
+      if (y < 0) continue; // above the board: ignore (rare)
+      grid[y][x] = piece.type;
+    }
+    clearLines();
+    spawn();
+  }
+
+  function clearLines() {
+    let cleared = 0;
+    for (let y = ROWS - 1; y >= 0; y--) {
+      if (grid[y].every(Boolean)) {
+        grid.splice(y, 1);
+        grid.unshift(Array(COLS).fill(null));
+        cleared++;
+        y++; // re-check same row index after shift
+      }
+    }
+    if (cleared > 0) {
+      const base = [0, 40, 100, 200][cleared - 1] || 40;
+      score += base * level;
+      lines += cleared;
+      level = Math.floor(lines / 5) + 1;
+      updateStats();
+    }
+  }
+
+  function updateStats() {
+    scoreEl.textContent = score;
+    levelEl.textContent = level;
+    linesEl.textContent = lines;
+  }
+
+  // ---------------- Movement ----------------
+  function move(dx, dy) {
+    if (!running || paused) return;
+    if (collides(piece.cells, piece.originX + dx, piece.originY + dy)) return false;
+    piece.originX += dx;
+    piece.originY += dy;
+    return true;
+  }
+
+  function rotate(dir) {
+    if (!running || paused) return;
+    const rotated = rotateCells(piece.cells, dir); // already normalized
+    // Try rotation with wall kick offsets.
+    const kicks = [[0,0],[1,0],[-1,0],[0,-1],[1,-1],[-1,-1]];
+    for (const [kx, ky] of kicks) {
+      if (!collides(rotated, piece.originX + kx, piece.originY + ky)) {
+        piece.cells = rotated;
+        piece.originX += kx;
+        piece.originY += ky;
+        return;
+      }
+    }
+  }
+
+  function softDrop() {
+    if (move(0, 1)) { score += 1; updateStats(); }
+    else lock();
+  }
+
+  function hardDrop() {
+    while (!collides(piece.cells, piece.originX, piece.originY + 1)) {
+      piece.originY++;
+    }
+    lock();
+  }
+
+  // ---------------- Rendering ----------------
+  function drawCell(context, x, y, color) {
+    context.fillStyle = color;
+    context.fillRect(x * CELL + 1, y * CELL + 1, CELL - 2, CELL - 2);
+    // subtle highlight
+    context.fillStyle = "rgba(255,255,255,.22)";
+    context.fillRect(x * CELL + 1, y * CELL + 1, CELL - 2, 3);
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // grid lines
+    ctx.strokeStyle = "rgba(255,255,255,.04)";
+    ctx.lineWidth = 1;
+    for (let x = 1; x < COLS; x++) {
+      ctx.beginPath();
+      ctx.moveTo(x * CELL + .5, 0);
+      ctx.lineTo(x * CELL + .5, canvas.height);
+      ctx.stroke();
+    }
+    for (let y = 1; y < ROWS; y++) {
+      ctx.beginPath();
+      ctx.moveTo(0, y * CELL + .5);
+      ctx.lineTo(canvas.width, y * CELL + .5);
+      ctx.stroke();
+    }
+
+    // locked cells
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        const t = grid[y][x];
+        if (t) drawCell(ctx, x, y, COLORS[t]);
+      }
+    }
+
+    // ghost + current piece
+    if (piece && running) {
+      // ghost position
+      let gy = piece.originY;
+      while (!collides(piece.cells, piece.originX, gy + 1)) gy++;
+      ctx.globalAlpha = .25;
+      for (const c of piece.cells) {
+        const x = c.x + piece.originX, y = c.y + gy;
+        if (y >= 0) drawCell(ctx, x, y, COLORS[piece.type]);
+      }
+      ctx.globalAlpha = 1;
+
+      for (const c of piece.cells) {
+        const x = c.x + piece.originX, y = c.y + piece.originY;
+        if (y >= 0) drawCell(ctx, x, y, COLORS[piece.type]);
+      }
+    }
+  }
+
+  function drawNext() {
+    nctx.clearRect(0, 0, nextCanvas.width, nextCanvas.height);
+    if (!nextPiece) return;
+    const cells = nextPiece.cells;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const c of cells) {
+      if (c.x < minX) minX = c.x; if (c.x > maxX) maxX = c.x;
+      if (c.y < minY) minY = c.y; if (c.y > maxY) maxY = c.y;
+    }
+    const w = maxX - minX + 1, h = maxY - minY + 1;
+    const cell = 20;
+    const ox = (nextCanvas.width - w * cell) / 2;
+    const oy = (nextCanvas.height - h * cell) / 2;
+    for (const c of cells) {
+      const x = ox + (c.x - minX) * cell, y = oy + (c.y - minY) * cell;
+      nctx.fillStyle = COLORS[nextPiece.type];
+      nctx.fillRect(x + 1, y + 1, cell - 2, cell - 2);
+      nctx.fillStyle = "rgba(255,255,255,.22)";
+      nctx.fillRect(x + 1, y + 1, cell - 2, 3);
+    }
+  }
+
+  // ---------------- Loop ----------------
+  function loop(now) {
+    if (!running || paused) return;
+    const dt = now - lastTime;
+    lastTime = now;
+    dropCounter += dt;
+
+    const gravity = Math.max(100, 700 - (level - 1) * 80); // ms per row
+    if (dropCounter > gravity) {
+      dropCounter = 0;
+      softDrop();
+    }
+    draw();
+    rafId = requestAnimationFrame(loop);
+  }
+
+  // ---------------- Game flow ----------------
+  function start() {
+    grid = emptyGrid();
+    score = 0; level = 1; lines = 0;
+    spawnBag = [];
+    gameOver = false; paused = false;
+    updateStats();
+    nextPiece = bagNext();
+    spawn();
+    running = true;
+    lastTime = performance.now();
+    dropCounter = 0;
+    overlay.classList.remove("show");
+    if (!rafId) rafId = requestAnimationFrame(loop);
+  }
+
+  function pause() {
+    if (!running) return;
+    paused = !paused;
+    document.getElementById("pauseBtn").textContent = paused ? "继续" : "暂停";
+  }
+
+  function endGame() {
+    running = false;
+    gameOver = true;
+    cancelAnimationFrame(rafId); rafId = null;
+    ovTitle.textContent = "游戏结束";
+    ovSub.textContent = `最终得分 ${score} · 等级 ${level}`;
+    overlay.classList.add("show");
+  }
+
+  // ---------------- Input ----------------
+  const keyMap = {
+    ArrowLeft: () => move(-1, 0),
+    ArrowRight: () => move(1, 0),
+    ArrowDown: softDrop,
+    ArrowUp: () => rotate(1),
+    KeyW: () => rotate(1),
+    Space: hardDrop,
+    KeyP: pause,
+    Escape: pause,
+    Enter: start,
+  };
+
+  window.addEventListener("keydown", (e) => {
+    if (!running && e.key === "Enter") { start(); return; }
+    const fn = keyMap[e.code];
+    if (fn) { e.preventDefault(); fn(); }
+  });
+
+  document.getElementById("startBtn").addEventListener("click", () => {
+    if (!running || gameOver) start(); else pause();
+  });
+  document.getElementById("pauseBtn").addEventListener("click", pause);
+  document.getElementById("restartBtn").addEventListener("click", start);
+
+  // ---------------- Init ----------------
+  grid = emptyGrid();
+  score = 0; level = 1; lines = 0; spawnBag = [];
+  updateStats();
+  draw();
+})();
+</script>
+</body>
+</html>

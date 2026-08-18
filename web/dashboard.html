@@ -23,6 +23,7 @@
   .dot{width:9px;height:9px;border-radius:50%;background:var(--muted);display:inline-block}
   .dot.ok{background:var(--green);box-shadow:0 0 6px var(--green)}
   .dot.bad{background:var(--red)}
+  .dot.warn{background:#f59e0b;box-shadow:0 0 6px #f59e0b}
   .spacer{flex:1}
   .muted{color:var(--muted)}
   button{background:var(--panel);color:var(--text);border:1px solid var(--border);
@@ -102,6 +103,20 @@
   </div>
 
   <div class="panel">
+    <h2>工具韧性策略</h2>
+    <div id="toolResilience" class="muted">正在加载工具重试与熔断状态…</div>
+  </div>
+
+  <div class="panel">
+    <h2>会话运行时 <span class="muted" style="font-weight:400">后台任务与事件链路</span></h2>
+    <div id="runtimeHint" class="muted" style="margin-bottom:10px"></div>
+    <table id="jobTable"><thead><tr>
+      <th>任务</th><th>状态</th><th>类型</th><th>开始时间</th><th>操作</th>
+    </tr></thead><tbody id="jobRows"></tbody></table>
+    <div style="margin-top:14px"><b style="font-size:13px">最近会话事件</b><div id="runtimeEvents" class="muted" style="margin-top:8px"></div></div>
+  </div>
+
+  <div class="panel">
     <h2>Prometheus 原始指标 <span class="muted" style="font-weight:400">/api/metrics</span></h2>
     <pre id="rawMetrics" style="margin:0;max-height:240px;overflow:auto;font-size:12px;
       color:var(--muted);white-space:pre-wrap"></pre>
@@ -112,18 +127,39 @@
 // 纯原生,无外部依赖。轮询自身 API,内存里滚动保存采样序列。
 const cpuHist = [], memHist = [], MAX = 60;
 let paused = false, timer = null;
+const runtimeSession = new URLSearchParams(location.search).get('session_id') || '';
 
+function apiHeaders(){
+  const headers = {};
+  const apiKey = localStorage.getItem('sa_key') || '';
+  if(apiKey) headers['X-API-Key'] = apiKey;
+  try{
+    const auth = JSON.parse(localStorage.getItem('sa_auth') || 'null');
+    if(auth && auth.user_id) headers['X-User-Id'] = auth.user_id;
+    if(auth && auth.token) headers['Authorization'] = 'Bearer ' + auth.token;
+  }catch(_e){ /* Ignore a malformed local development auth cache. */ }
+  return headers;
+}
 async function jget(url){
-  const r = await fetch(url, {headers:{'X-API-Key': localStorage.getItem('sa_key')||''}});
+  const r = await fetch(url, {headers: apiHeaders()});
   if(!r.ok) throw new Error(url+' → '+r.status);
   return r.json();
 }
 async function tget(url){
-  const r = await fetch(url); if(!r.ok) throw new Error(url+' '+r.status); return r.text();
+  const r = await fetch(url, {headers: apiHeaders()});
+  if(!r.ok) throw new Error(url+' '+r.status); return r.text();
 }
 function fmt(n){ return (n==null?'–':Number(n).toLocaleString()); }
 function money(n,cur){ return (n==null?'–':(cur||'¥')+Number(n).toFixed(4)); }
 function esc(s){ return String(s==null?'':s).replace(/[&<>\"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c])); }
+function safeInt(n, fallback=0){
+  const value = Number(n);
+  return Number.isFinite(value) ? value : fallback;
+}
+function safeNumber(n, fallback=null){
+  const value = Number(n);
+  return Number.isFinite(value) ? value : fallback;
+}
 function resultText(task){
   const content = task && task.message && task.message.content;
   if(content == null) return '';
@@ -150,18 +186,25 @@ function drawSpark(id, data, max){
 
 async function tick(){
   if(paused) return;
+  let health = null;
   try{
     const h = await jget('/api/health');
-    document.getElementById('healthDot').className = 'dot ok';
+    health = h;
+    const healthOk = h.ok !== false;
+    const failedChecks = Object.entries(h.checks||{})
+      .filter(([, check]) => check && check.required && check.status === 'error')
+      .map(([name]) => name.toUpperCase());
+    const healthDetail = failedChecks.length ? ` · ${failedChecks.join('、')} 检查失败` : '';
+    document.getElementById('healthDot').className = `dot ${healthOk ? 'ok' : 'warn'}`;
     document.getElementById('statusText').textContent =
-      `运行中 · 版本 ${h.version} · 已运行 ${Math.floor(h.uptime_seconds/60)} 分`;
+      `${healthOk ? '运行中' : '降级运行'}${healthDetail} · 版本 ${h.version} · 已运行 ${Math.floor(h.uptime_seconds/60)} 分`;
 
     const sess = h.sessions||{}, reqs = h.requests||{};
     const total = reqs.total||0, errs = reqs.errors||0;
     const errRate = total? ((errs/total)*100).toFixed(1)+'%':'0%';
     document.getElementById('kpis').innerHTML =
       kpi('总请求', fmt(total), `错误 ${fmt(errs)}`) +
-      kpi('错误率', errRate, errs>0?'⚠ 有失败请求':'健康') +
+      kpi('错误率', errRate, !healthOk?'⚠ 健康检查降级':(errs>0?'⚠ 有失败请求':'健康')) +
       kpi('活跃会话', fmt(sess.active_sessions!=null?sess.active_sessions:'–'),
           `上限 ${sess.max_sessions!=null?sess.max_sessions:'–'}`) +
       kpi('在途请求', fmt(h.inflight), '正在处理');
@@ -173,16 +216,19 @@ async function tick(){
       drawSpark('cpuChart', cpuHist, 100);
       document.getElementById('cpuNow').textContent = sys.cpu_percent.toFixed(0)+'%';
       document.getElementById('memNow').textContent =
-        sys.memory_percent.toFixed(0)+'% ('+(sys.memory_used_gb||'?')+' GB)';
+        sys.memory_percent.toFixed(0)+'% ('+(sys.memory_used_gb ?? '\u6682\u65e0')+' GB)';
     }
 
     const llm = h.llm||{};
+    const llmReady = llm.status === 'ok' || (llm.reachable && !llm.error && !llm.reason);
+    const llmLabel = llmReady ? '就绪' : (llm.reachable ? '服务可达但不可用' : '不可达');
+    const llmDetail = llm.reason || llm.error || '';
     document.getElementById('llmInfo').innerHTML =
-      `<div><span class="dot ${llm.reachable?'ok':'bad'}"></span>
-        ${llm.reachable?'可达':'不可达'} <span class="tag">${llm.model||'?'}</span></div>
-       <div class="muted" style="margin-top:8px;word-break:break-all">${llm.base_url||''}</div>
+      `<div><span class="dot ${llmReady?'ok':'bad'}"></span>
+        ${llmLabel} <span class="tag">${esc(llm.model||'未知模型')}</span></div>
+       <div class="muted" style="margin-top:8px;word-break:break-all">${esc(llm.base_url||'未配置地址')}</div>
        ${llm.latency_ms!=null?`<div class="muted">延迟 ${llm.latency_ms} ms</div>`:''}
-       ${llm.error?`<div class="err">${llm.error}</div>`:''}`;
+       ${llmDetail?`<div class="err">${esc(llmDetail)}</div>`:''}`;
   }catch(e){
     document.getElementById('healthDot').className='dot bad';
     document.getElementById('statusText').innerHTML=`<span class="err">${e.message}</span>`;
@@ -193,23 +239,79 @@ async function tick(){
     const tb = document.querySelector('#costTable tbody');
     const rows = Object.entries(c.by_model||{});
     tb.innerHTML = rows.length? rows.map(([m,d])=>
-      `<tr><td>${m}</td><td class="num">${fmt(d.request_count||d.requests)}</td>
+      `<tr><td>${esc(m)}</td><td class="num">${fmt(d.request_count||d.requests)}</td>
         <td class="num">${fmt(d.total_tokens||d.tokens)}</td>
         <td class="num">${money(d.total_cost||d.cost,c.currency)}</td></tr>`).join('')
       : `<tr><td colspan="4" class="muted">暂无成本记录(发起对话后出现)</td></tr>`;
     document.getElementById('costMeta').textContent =
       `合计 ${money(c.total_cost,c.currency)} · ${fmt(c.total_tokens)} tokens · `+
-      `${fmt(c.request_count)} 次调用 · 价格版本 ${c.price_version||'?'}`;
+      `${fmt(c.request_count)} 次调用 · 价格版本 ${c.price_version||'\u6682\u65e0'}`;
   }catch(e){ document.getElementById('costMeta').innerHTML=`<span class="err">成本接口: ${e.message}</span>`; }
 
   try{
     const t = await jget('/api/tools');
-    document.getElementById('toolsList').innerHTML =
-      (t.tools&&t.tools.length)? t.tools.map(x=>
-        `<div style="margin-bottom:8px"><span class="tag">${x.name}</span>
-          <span class="muted"> ${x.description||''}</span></div>`).join('')
-      : '<span class="muted">未注册工具</span>';
-  }catch(e){ document.getElementById('toolsList').innerHTML=`<span class="err">${e.message}</span>`; }
+    const tools = t.tools || [];
+    document.getElementById('toolsList').innerHTML = tools.length ? tools.map(x=>{
+      const resilience = x.resilience || {};
+      const state = resilience.state || 'closed';
+      const failures = safeInt(resilience.consecutive_failures, 0);
+      const stateLabel = state === 'open' ? '已熔断' : state === 'half_open' ? '恢复探测中' : '正常';
+      const stateClass = state === 'closed' ? 'ok' : 'bad';
+      return `<div style="margin-bottom:9px"><span class="tag">${esc(x.name)}</span>
+        <span class="muted"> ${esc(x.description||'')}</span><br>
+        <span class="muted">权限：${esc(x.permission_level||'allow')} &middot; </span>
+        <span class="dot ${stateClass}"></span><span class="muted">${stateLabel}（连续瞬态失败 ${failures}）</span></div>`;
+    }).join('') : '<span class="muted">未注册工具</span>';
+
+    const policy = t.policy || (health && health.tool_resilience && health.tool_resilience.policy) || {};
+    const openTools = tools
+      .map(x => [x.name, x.resilience || {}])
+      .filter(([, status]) => status.state && status.state !== 'closed');
+    const openText = openTools.length
+      ? openTools.map(([name, status]) => `${esc(name)}（${esc(status.state)}）`).join('、')
+      : '无，所有已调用工具均处于正常状态';
+    document.getElementById('toolResilience').innerHTML =
+      `<div>默认执行超时：<strong>${fmt(policy.timeout_seconds)} 秒</strong> &middot; `+
+      `只读工具最大自动重试：<strong>${fmt(policy.max_retries)} 次</strong></div>`+
+      `<div style="margin-top:8px">熔断状态：${openText}</div>`+
+      `<div style="margin-top:8px">说明：仅安全的只读工具会在瞬态故障时自动重试；写入或需确认工具不会自动重放。连续瞬态失败会打开该工具的独立熔断器，等待恢复窗口后仅放行一次探测调用。</div>`;
+  }catch(e){
+    document.getElementById('toolsList').innerHTML=`<span class="err">${esc(e.message)}</span>`;
+    document.getElementById('toolResilience').innerHTML=`<span class="err">工具韧性信息加载失败：${esc(e.message)}</span>`;
+  }
+
+  try{
+    const hint = document.getElementById('runtimeHint');
+    const jobRows = document.getElementById('jobRows');
+    const events = document.getElementById('runtimeEvents');
+    if(!runtimeSession){
+      hint.textContent = '要查看某次对话的后台任务与事件链路，请在地址后附加 ?session_id=会话ID。';
+      jobRows.innerHTML = '<tr><td colspan="5" class="muted">尚未选择会话</td></tr>';
+      events.textContent = '尚未选择会话';
+    }else{
+      hint.textContent = '当前会话：' + runtimeSession;
+      const [jobData, eventData] = await Promise.all([
+        jget('/api/jobs?session_id='+encodeURIComponent(runtimeSession)+'&limit=10'),
+        jget('/api/sessions/'+encodeURIComponent(runtimeSession)+'/events?limit=12'),
+      ]);
+      const jobs = jobData.jobs || [];
+      jobRows.innerHTML = jobs.length ? jobs.map(job=>{
+        const canCancel = ['queued','running','cancel_requested'].includes(job.status);
+        const action = canCancel ? `<button onclick="cancelRuntimeJob('${esc(job.job_id)}')">取消</button>` : '—';
+        return `<tr><td><code>${esc(job.job_id).slice(0,18)}</code></td><td><span class="tag">${esc(job.status)}</span></td><td>${esc(job.tool_name||'')}</td><td>${job.started_at?new Date(job.started_at*1000).toLocaleTimeString():'等待中'}</td><td>${action}</td></tr>`;
+      }).join('') : '<tr><td colspan="5" class="muted">当前会话没有后台任务</td></tr>';
+      const rows = eventData.events || [];
+      events.innerHTML = rows.length ? rows.slice().reverse().map(ev=>{
+        const payload = ev.payload || {};
+        const detail = payload.error_code || payload.artifact_id || payload.stop_reason || '';
+        return `<div style="margin:4px 0"><span class="tag">${esc(ev.type)}</span> <code>${esc(ev.trace_id||'-')}</code> ${esc(payload.tool_name||'')} ${esc(detail)}</div>`;
+      }).join('') : '当前会话还没有事件记录';
+    }
+  }catch(e){
+    document.getElementById('runtimeHint').innerHTML = `<span class="err">运行时信息加载失败：${esc(e.message)}</span>`;
+    document.getElementById('jobRows').innerHTML = '<tr><td colspan="5" class="muted">暂无数据</td></tr>';
+    document.getElementById('runtimeEvents').textContent = '';
+  }
 
   try{
     document.getElementById('rawMetrics').textContent = await tget('/api/metrics');
@@ -222,7 +324,7 @@ async function tick(){
     document.getElementById('a2aRows').innerHTML = rows.length ? rows.map(t=>`
       <tr><td><code>${esc(t.taskId)}</code></td><td>${a2aTag(t.state)}</td>
         <td style="max-width:300px;word-break:break-all">${esc(resultText(t).slice(0,100))}${t.error?' <span class="err">'+esc(t.error)+'</span>':''}</td>
-        <td class="num">${t.duration!=null?t.duration.toFixed(1)+'s':'-'}</td></tr>`).join('')
+        <td class="num">${safeNumber(t.duration)==null?'-':safeNumber(t.duration).toFixed(1)+'s'}</td></tr>`).join('')
       : '<tr><td colspan="4" class="muted">暂无 A2A 任务</td></tr>';
     try{
       const st = await jget('/a2a/stats');
@@ -239,6 +341,17 @@ async function tick(){
     '更新于 ' + new Date().toLocaleTimeString();
 }
 
+window.cancelRuntimeJob = async function(jobId){
+  if(!runtimeSession || !confirm('确认请求取消该后台任务吗？')) return;
+  try{
+    const response = await fetch('/api/jobs/'+encodeURIComponent(jobId)+'/cancel?session_id='+encodeURIComponent(runtimeSession), {
+      method:'POST', headers:apiHeaders()
+    });
+    if(!response.ok) throw new Error('取消失败：'+response.status);
+    tick();
+  }catch(e){ alert(e.message); }
+};
+
 document.getElementById('themeBtn').onclick = ()=>{
   const cur = document.documentElement.getAttribute('data-theme')==='light'?'':'light';
   document.documentElement.setAttribute('data-theme',cur);
@@ -254,3 +367,5 @@ timer = setInterval(tick, 3000);  // 每 3 秒刷新
 </script>
 </body>
 </html>
+
+

@@ -244,23 +244,27 @@ class LLMClient:
             "stream": True,
         }
         resp = self._post_with_retry(url, payload, stream=True)
-        for line in resp.iter_lines():
-            if not line:
-                continue
-            text = line.decode("utf-8", errors="replace")
-            if not text.startswith("data: "):
-                continue
-            data_str = text[6:]
-            if data_str.strip() == "[DONE]":
-                break
-            try:
-                chunk = json.loads(data_str)
-                delta = chunk.get("choices", [{}])[0].get("delta", {})
-                content = delta.get("content", "")
-                if content:
-                    yield content
-            except json.JSONDecodeError:
-                continue
+        try:
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                text = line.decode("utf-8", errors="replace")
+                if not text.startswith("data: "):
+                    continue
+                data_str = text[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    content = delta.get("content", "")
+                    if content:
+                        yield content
+                except json.JSONDecodeError:
+                    continue
+        finally:
+            # Generator cancellation/close must release the underlying socket.
+            resp.close()
 
     def list_models(self) -> List[str]:
         """列出可用模型 (与 chat 统一: base_url 已含 /v1)"""
@@ -353,10 +357,14 @@ class AsyncLLMClient:
         model: Optional[str] = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        idle_timeout: Optional[float] = None,
     ) -> Tuple[str, List[Dict[str, Any]], Dict[str, Any]]:
         url = f"{self.base_url}/chat/completions"
         payload = self._payload(messages, tools, model=model,
                                 max_tokens=max_tokens, temperature=temperature)
+        idle_limit = float(idle_timeout if idle_timeout is not None else self.timeout)
+        if idle_limit <= 0:
+            raise ValueError("idle_timeout must be positive")
 
         # Circuit breaker gate
         if self._circuit_breaker is not None:
@@ -377,7 +385,7 @@ class AsyncLLMClient:
             try:
                 resp = await client.post(
                     url, json=payload, headers=self._headers(),
-                    timeout=min(self.timeout, remaining))
+                    timeout=min(idle_limit, remaining))
                 if resp.status_code in (429, 500, 502, 503, 504) \
                         and attempt < MAX_RETRIES:
                     last_exc = RuntimeError(f"HTTP {resp.status_code}")
@@ -464,12 +472,16 @@ class AsyncLLMClient:
         model: Optional[str] = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        idle_timeout: Optional[float] = None,
     ) -> AsyncIterator[Dict[str, Any]]:
         """OpenAI 兼容 SSE 流式解析: 增量 delta + 工具调用按 index 聚合。"""
         url = f"{self.base_url}/chat/completions"
         payload = self._payload(messages, tools, stream=True, model=model,
                                 max_tokens=max_tokens, temperature=temperature)
         client = self._get_client()
+        idle_limit = float(idle_timeout if idle_timeout is not None else self.timeout)
+        if idle_limit <= 0:
+            raise ValueError("idle_timeout must be positive")
 
         content_parts: List[str] = []
         tool_acc: Dict[int, Dict[str, Any]] = {}
@@ -477,11 +489,15 @@ class AsyncLLMClient:
 
         async with client.stream("POST", url, json=payload,
                                  headers=self._headers(),
-                                 timeout=self.timeout) as resp:
+                                 timeout=idle_limit) as resp:
             resp.raise_for_status()
+            last_activity = time.monotonic()
             async for line in resp.aiter_lines():
+                if time.monotonic() - last_activity > idle_limit:
+                    raise TimeoutError(f"LLM 流式响应空闲超时（{idle_limit:g}秒）")
                 if not line or not line.startswith("data:"):
                     continue
+                last_activity = time.monotonic()
                 data_str = line[5:].strip()
                 if data_str == "[DONE]":
                     break

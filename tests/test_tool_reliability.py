@@ -10,6 +10,8 @@ from my_agent.core.engine import (
     _explicit_procedural_tool_plan, _tool_call_fingerprint,
 )
 from my_agent.tools.registry import ToolRegistry
+from my_agent.resilience import ToolCircuitManager
+from my_agent.observability import MetricsCollector
 from my_agent.types.message import ToolCall
 
 
@@ -246,3 +248,166 @@ def test_explicit_procedural_plan_preserves_order_and_exact_arguments():
         ("read_file", {"path": "tests/test_tool_arg_validation.py"}),
     ]
 
+def test_read_only_transient_failure_is_retried_once_then_succeeds():
+    registry = ToolRegistry()
+    attempts = []
+
+    def flaky(_params):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise TimeoutError("temporarily unavailable")
+        return "ok"
+
+    registry.add("read_file", flaky, permission_level="allow")
+    metrics = MetricsCollector()
+    engine = QueryEngine(
+        "test", tool_registry=registry, tool_max_retries=1,
+        tool_retry_base_seconds=0, tool_timeout_seconds=0.2, metrics=metrics,
+    )
+
+    assert engine._execute_tool(ToolCall(id="retry-success", name="read_file", arguments={})) == "ok"
+    assert len(attempts) == 2
+    assert engine.tool_resilience_snapshot()["read_file"] == {
+        "state": "closed", "consecutive_failures": 0,
+    }
+    prom = metrics.get_prometheus_text()
+    assert 'tool_retries{reason="transient",tool="read_file"} 1' in prom
+    assert 'tool_calls{outcome="success",tool="read_file"} 1' in prom
+    assert 'tool_execution_latency_count{outcome="success",tool="read_file"} 1' in prom
+
+
+def test_deterministic_returned_tool_error_is_not_retried_or_counted_for_circuit():
+    registry = ToolRegistry()
+    attempts = []
+
+    def missing(_params):
+        attempts.append(1)
+        return "错误:路径不存在"
+
+    registry.add("read_file", missing, permission_level="allow")
+    engine = QueryEngine(
+        "test", tool_registry=registry, tool_max_retries=1,
+        tool_retry_base_seconds=0, tool_timeout_seconds=0.2,
+    )
+
+    result = engine._execute_tool(ToolCall(id="no-retry", name="read_file", arguments={}))
+    assert result == "错误:路径不存在"
+    assert len(attempts) == 1
+    assert engine.tool_resilience_snapshot()["read_file"] == {
+        "state": "closed", "consecutive_failures": 0,
+    }
+
+
+def test_ask_tool_failure_is_never_automatically_replayed():
+    registry = ToolRegistry()
+    attempts = []
+
+    def asks_for_side_effect(_params):
+        attempts.append(1)
+        raise TimeoutError("timeout")
+
+    registry.add("read_file", asks_for_side_effect, permission_level="ask")
+    engine = QueryEngine(
+        "test", tool_registry=registry, tool_max_retries=3,
+        tool_retry_base_seconds=0, tool_timeout_seconds=0.2,
+    )
+
+    result = engine._execute_tool(ToolCall(id="ask-no-retry", name="read_file", arguments={}))
+    assert "\u8d85\u65f6" in result
+    assert len(attempts) == 1
+
+
+def test_global_tool_circuit_fast_fails_after_transient_failure_threshold():
+    registry = ToolRegistry()
+    attempts = []
+
+    def unavailable(_params):
+        attempts.append(1)
+        raise TimeoutError("timeout")
+
+    registry.add("read_file", unavailable, permission_level="allow")
+    engine = QueryEngine(
+        "test", tool_registry=registry, tool_max_retries=0,
+        tool_retry_base_seconds=0, tool_timeout_seconds=0.2,
+        tool_circuit_failure_threshold=2, tool_circuit_recovery_seconds=60,
+    )
+
+    for index in range(2):
+        assert "超时" in engine._execute_tool(
+            ToolCall(id=f"circuit-{index}", name="read_file", arguments={})
+        )
+    result = engine._execute_tool(ToolCall(id="circuit-rejected", name="read_file", arguments={}))
+    assert "熔断中" in result
+    assert len(attempts) == 2
+    assert engine.tool_resilience_snapshot()["read_file"]["state"] == "open"
+
+
+def test_half_open_probe_success_restores_tool_circuit():
+    now = [0.0]
+    circuit = ToolCircuitManager(failure_threshold=1, recovery_timeout=10, clock=lambda: now[0])
+    registry = ToolRegistry()
+    attempts = []
+
+    def flaky(_params):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise TimeoutError("timeout")
+        return "recovered"
+
+    registry.add("read_file", flaky, permission_level="allow")
+    engine = QueryEngine(
+        "test", tool_registry=registry, tool_max_retries=0,
+        tool_timeout_seconds=0.2, tool_circuit_manager=circuit,
+    )
+
+    assert "超时" in engine._execute_tool(ToolCall(id="open", name="read_file", arguments={}))
+    assert engine.tool_resilience_snapshot()["read_file"]["state"] == "open"
+    now[0] = 10.0
+    assert engine._execute_tool(ToolCall(id="probe", name="read_file", arguments={})) == "recovered"
+    assert engine.tool_resilience_snapshot()["read_file"] == {
+        "state": "closed", "consecutive_failures": 0,
+    }
+
+
+def test_async_read_only_transient_failure_is_retried_once_then_succeeds():
+    async def run() -> tuple[str, int, dict]:
+        registry = ToolRegistry()
+        attempts = []
+
+        async def flaky(_params):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise TimeoutError("network timeout")
+            return "async-ok"
+
+        registry.add("read_file", flaky, permission_level="allow")
+        engine = QueryEngine(
+            "test", tool_registry=registry, tool_max_retries=1,
+            tool_retry_base_seconds=0, tool_timeout_seconds=0.2,
+        )
+        result = await engine._aexecute_tool(
+            ToolCall(id="async-retry", name="read_file", arguments={}), asyncio.Semaphore(1)
+        )
+        return result, len(attempts), engine.tool_resilience_snapshot()["read_file"]
+
+    result, attempts, snapshot = asyncio.run(run())
+    assert result == "async-ok"
+    assert attempts == 2
+    assert snapshot == {"state": "closed", "consecutive_failures": 0}
+
+def test_transient_error_string_is_retried_like_a_raised_timeout():
+    registry = ToolRegistry()
+    attempts = []
+
+    def flaky(_params):
+        attempts.append(1)
+        return "\u9519\u8bef:\u5de5\u5177\u6267\u884c\u8d85\u65f6" if len(attempts) == 1 else "recovered"
+
+    registry.add("read_file", flaky, permission_level="allow")
+    engine = QueryEngine(
+        "test", tool_registry=registry, tool_max_retries=1,
+        tool_retry_base_seconds=0, tool_timeout_seconds=0.2,
+    )
+
+    assert engine._execute_tool(ToolCall(id="returned-timeout", name="read_file", arguments={})) == "recovered"
+    assert len(attempts) == 2

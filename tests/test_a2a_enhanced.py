@@ -254,3 +254,29 @@ def test_non_completed_engine_stop_reason_is_failed():
         assert failed.message.content == "???"
     finally:
         server.stop()
+
+
+def test_async_agent_generator_is_closed_before_worker_loop_is_disposed():
+    cleaned = []
+
+    class GeneratorAgent:
+        async def arun(self, content):
+            async def provider_stream():
+                try:
+                    yield "first"
+                finally:
+                    cleaned.append("closed")
+
+            stream = provider_stream()
+            await stream.__anext__()
+            # Deliberately leave the provider stream open.  A2A owns the
+            # isolated loop and must drain async-generator finalizers.
+            return "done"
+
+    server = A2AServer(GeneratorAgent(), card(), task_timeout=1, db_path=":memory:")
+    try:
+        server.handle_message(A2AMessage(task_id="async-generator-cleanup", content="hello"))
+        wait_state(server, "async-generator-cleanup", TaskState.COMPLETED)
+        assert cleaned == ["closed"]
+    finally:
+        server.stop()

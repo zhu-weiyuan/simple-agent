@@ -1,4 +1,4 @@
-﻿# 运行产物归档
+# 运行产物归档
 
 此目录下的内容均为诊断、浏览器检查或评测过程产物，不能作为当前服务的运行状态。
 
@@ -8,3 +8,5 @@
 - `server-logs/`：历史日志。
 
 当前服务使用的可变数据库（例如 `runtime/tasks.db`、`runtime/prompts.db`）仍在 `runtime/`，因此未移动。
+
+- rowser-debug/recent-cleanup/：本次整理移入的浏览器测试数据库、会话目录和 UI E2E 产物。

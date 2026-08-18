@@ -926,6 +926,11 @@ class A2AServer:
             with self._lock:
                 self._async_handles.pop(task_id, None)
             try:
+                # ``engine.arun`` may consume provider async generators.  Give
+                # their ``aclose`` finalizers a chance to run before disposing
+                # the isolated worker loop, otherwise asyncio logs
+                # "Task was destroyed but it is pending" after a completed A2A task.
+                loop.run_until_complete(loop.shutdown_asyncgens())
                 loop.close()
             finally:
                 asyncio.set_event_loop(None)

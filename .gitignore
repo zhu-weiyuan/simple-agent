@@ -87,3 +87,8 @@ src/my_agent.egg-info/
 archive/runtime-artifacts/**
 !archive/runtime-artifacts/**/
 !archive/runtime-artifacts/**/README.md
+
+# Runtime job and session state (never commit local execution data)
+runtime/jobs/
+runtime/session-events/
+runtime/artifacts/

@@ -40,5 +40,5 @@ def test_async_task_queue_result():
 
 
 def test_sample_golden_set_is_valid():
-    data = json.loads((Path(__file__).parent / "data" / "sample_golden_set.json").read_text(encoding="utf-8"))
+    data = json.loads((Path(__file__).parents[1] / "evals" / "datasets" / "sample_golden_set.json").read_text(encoding="utf-8"))
     assert 5 <= sum(len(task["trials"]) for task in data["tasks"]) <= 10

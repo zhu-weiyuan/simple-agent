@@ -73,7 +73,7 @@
   <h2>任务统计</h2>
   <div class="stat-grid" id="statsBox"></div>
 
-  <div class="muted" style="margin-top:18px">SimpleAgent v2.1 · A2A（Agent-to-Agent）任务管理 · 数据库：<code>runtime/a2a_tasks.db</code></div>
+  <div class="muted" style="margin-top:18px">SimpleAgent v2.1 · A2A（Agent-to-Agent）任务管理 · 持久化：SQLite</div>
 </div>
 
 <script>
@@ -94,14 +94,22 @@ const cls = state => (state==='completed'||state==='submitted') ? 'ok' :
               (state==='working'||state==='cancel_requested') ? 'warn' : 'bad';
 const tag = s => `<span class="tag ${cls(s)}">${s||'未知'}</span>`;
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function safeInt(n, fallback=0){
+  const value = Number(n);
+  return Number.isFinite(value) ? value : fallback;
+}
+function safeDuration(n){
+  const value = Number(n);
+  return Number.isFinite(value) ? value.toFixed(1)+'s' : '-';
+}
 function resultText(task){
   const content = task && task.message && task.message.content;
   if(content == null) return '';
   if(typeof content !== 'string') return JSON.stringify(content);
   // Older task records stored the engine result as a Python-dict-like string.
   // Prefer its user-facing content field instead of internal usage metadata.
-  const match = content.match(/(?:^|[,{]\s*)['"]content['"]\s*:\s*['"]([\s\S]*?)['"](?:\s*,|\s*})/);
-  return (match ? match[1] : content).replace(/\\n/g, '\n');
+  const match = content.match(/(?:^|[,{]\s*)['"]content['"]\s*:\s*(['"])([\s\S]*?)\1(?:\s*,|\s*})/);
+  return (match ? match[2] : content).replace(/\\n/g, '\n');
 }
 
 async function loadAgents(){
@@ -130,7 +138,7 @@ async function loadTasks(){
         <td>${tag(t.state)}</td>
         <td class="muted">${esc(t.agent||'local')}</td>
         <td>${esc(resultText(t).slice(0,180))}${t.error ? `<div class="err">${esc(t.error)}</div>` : ''}</td>
-        <td class="muted">${t.duration!=null ? t.duration.toFixed(1)+'s' : '-'}</td>
+        <td class="muted">${safeDuration(t.duration)}</td>
         <td>${t.state==='submitted'||t.state==='working'||t.state==='cancel_requested' ? `<button data-cancel="${esc(t.taskId)}">取消</button>` : ''}</td>
       </tr>`).join('') : '<tr><td colspan="6" class="muted">\u6682\u65e0\u4efb\u52a1</td></tr>';
     document.querySelectorAll('button[data-cancel]').forEach(b=>b.addEventListener('click', async ()=>{
@@ -144,8 +152,8 @@ async function loadStats(){
     const s = await jget('/a2a/stats');
     const c = s.counters||{};
     const p = (s.local && s.local.persisted) || {};
-    const persistedTotal = Object.values(p).reduce((sum, value) => sum + Number(value || 0), 0);
-    const count = key => Math.max(Number(c[key] || 0), Number(p[key] || 0));
+    const persistedTotal = Object.values(p).reduce((sum, value) => sum + safeInt(value, 0), 0);
+    const count = key => Math.max(safeInt(c[key], 0), safeInt(p[key], 0));
     const items = [
       ['\u5df2\u63d0\u4ea4', Math.max(Number(c.submitted || 0), persistedTotal)],
       ['\u5df2\u5b8c\u6210', count('completed')], ['\u5931\u8d25', count('failed')],
@@ -176,3 +184,4 @@ loadAgents(); loadCard(); loadTasks(); loadStats();
 </script>
 </body>
 </html>
+

@@ -81,7 +81,7 @@ class Graph:
 
         # 检查点恢复
         if self._checkpointer_enabled:
-            checkpoint = self._load_checkpoint(current)
+            checkpoint = self._load_checkpoint(current, state.run_id)
             if checkpoint:
                 state.restore(checkpoint)
                 print(f"[Checkpoint] Restored from node '{current}'")
@@ -143,21 +143,32 @@ class Graph:
         except Exception as e:
             print(f"[Checkpoint] Save failed: {e}")
 
-    def _load_checkpoint(self, node_name: str) -> Optional[Dict[str, Any]]:
-        """加载检查点"""
+    def _load_checkpoint(self, node_name: str, run_id: str) -> Optional[Dict[str, Any]]:
+        """加载某一次运行在指定节点保存的检查点。
+
+        检查点文件名与保存逻辑严格对应：``<node_name>_<run_id>.json``。
+        ``run_id`` 来自调用方的 ``GraphState``，不能从图节点列表推断，
+        否则不同运行会互相错配且无法恢复。
+        """
         try:
             import os
+            import re
+
+            # 节点和运行 ID 都来自内部状态；仍限制为文件名安全字符，避免
+            # 自定义 GraphState 把路径片段带进 checkpoint 目录。
+            safe_part = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+            if not safe_part.fullmatch(node_name) or not safe_part.fullmatch(run_id):
+                print("[Checkpoint] Load skipped: invalid node name or run_id")
+                return None
+
             path = self._checkpoint_path or "checkpoints"
-            checkpoint_file = os.path.join(path, f"{node_name}_{self._nodes_list()[0]}.json")  # 简化
+            checkpoint_file = os.path.join(path, f"{node_name}_{run_id}.json")
             if os.path.exists(checkpoint_file):
                 with open(checkpoint_file, "r", encoding="utf-8") as f:
                     return json.load(f)
         except Exception as e:
             print(f"[Checkpoint] Load failed: {e}")
         return None
-
-    def _nodes_list(self) -> List[str]:
-        return list(self.nodes.keys())
 
 
 class GraphBuilder:

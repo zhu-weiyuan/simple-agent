@@ -27,6 +27,21 @@ def test_search_and_range_and_info(monkeypatch, tmp_path):
     info = json.loads(FileInfoTool().execute({"path": "a.py"}))
     assert info["type"] == "file" and info["size_bytes"] > 0
 
+def test_list_hides_sensitive_file_names(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENT_WORKSPACE_ROOT", str(tmp_path))
+    (tmp_path / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+    (tmp_path / '.env.example').write_text('TOKEN=placeholder\n', encoding='utf-8')
+    (tmp_path / "id_ed25519").write_text("private-key", encoding="utf-8")
+    (tmp_path / "README.md").write_text("safe", encoding="utf-8")
+
+    result = ListFilesTool().execute({"path": "."})
+
+    assert "README.md" in result
+    assert ".env" not in result
+    assert '.env.example' not in result
+    assert "id_ed25519" not in result
+
+
 def test_list_is_bounded(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENT_WORKSPACE_ROOT", str(tmp_path))
     for i in range(205):
@@ -86,3 +101,4 @@ def test_run_tests_ruff_uses_check_subcommand(monkeypatch, tmp_path):
     assert observed["command"][-3:-1] == ["ruff", "check"]
     assert observed["command"][-1].replace("\\", "/") == "src/example.py"
     assert result.startswith("ruff ")
+

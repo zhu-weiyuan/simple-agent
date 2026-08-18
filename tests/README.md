@@ -1,3 +1,21 @@
 # tests
 
-新版模块与工程化测试。test_p6_pure.py 是纯 stdlib 回归；test_gateway.py 测网关；test_router.py 测路由；test_routing_budget_pure.py 测预算；test_cost_tracker.py 测 token 和成本；test_context_assembler.py/test_compaction.py 测上下文；test_persistence.py/test_task_persistence.py/test_eval_persistence.py 测持久化；eval_harness.py 是评测框架；data/ 是黄金数据集。
+这里放面向源码和服务行为的自动化回归测试，由 pytest 运行。新测试一律放在本目录，评测运行器和数据集不要混入这里。
+
+## 主要分区
+
+- `test_*.py`：模块、接口、持久化、韧性、安全和生命周期回归测试。
+- `test/`：历史兼容回归目录；除非维护旧行为，新测试不要放入这里。
+- `../evals/`：独立的 Agent 评测 harness、数据集、评测运行器和报告；测试只验证其行为，不承载评测数据。
+
+推荐入口：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests -q
+```
+
+运行评测数据集格式校验：
+
+```powershell
+.\.venv\Scripts\python.exe evals\run_eval.py --validate
+```

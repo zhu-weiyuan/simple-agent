@@ -4,7 +4,8 @@ from __future__ import annotations
 import threading
 import time
 from enum import Enum
-from typing import Callable, Optional
+from dataclasses import dataclass
+from typing import Callable, Dict, Optional, Tuple
 
 
 class CircuitState(str, Enum):
@@ -101,3 +102,76 @@ class CircuitBreaker:
         self._state = CircuitState.OPEN
         self._opened_at = self._clock()
         self._probe_in_flight = False
+
+@dataclass(frozen=True)
+class ToolCircuitSnapshot:
+    """A stable, JSON-friendly view of one tool's shared circuit."""
+
+    state: str
+    consecutive_failures: int
+
+
+class ToolCircuitManager:
+    """Per-tool process-wide circuit management for tool handlers.
+
+    The manager is intentionally owned by :class:`QueryEngine`, which is a
+    long-lived singleton in the HTTP app.  That makes a circuit shared across
+    requests without leaking state across unrelated engine instances or tests.
+    Only *transient* failures are reported to this manager; bad parameters,
+    permission denials and deterministic business errors must never take a
+    healthy tool offline.
+    """
+
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 30.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self._clock = clock
+        self._breakers: Dict[str, CircuitBreaker] = {}
+        self._lock = threading.Lock()
+
+    def _get(self, tool_name: str) -> CircuitBreaker:
+        with self._lock:
+            breaker = self._breakers.get(tool_name)
+            if breaker is None:
+                breaker = CircuitBreaker(
+                    failure_threshold=self.failure_threshold,
+                    recovery_timeout=self.recovery_timeout,
+                    clock=self._clock,
+                )
+                self._breakers[tool_name] = breaker
+            return breaker
+
+    def allow_request(self, tool_name: str) -> Tuple[bool, ToolCircuitSnapshot]:
+        breaker = self._get(tool_name)
+        allowed = breaker.allow_request()
+        return allowed, self.snapshot(tool_name)
+
+    def record_success(self, tool_name: str) -> ToolCircuitSnapshot:
+        breaker = self._get(tool_name)
+        breaker.record_success()
+        return self.snapshot(tool_name)
+
+    def record_transient_failure(self, tool_name: str) -> ToolCircuitSnapshot:
+        breaker = self._get(tool_name)
+        breaker.record_failure()
+        return self.snapshot(tool_name)
+
+    def release_probe(self, tool_name: str) -> None:
+        self._get(tool_name).release_probe()
+
+    def snapshot(self, tool_name: str) -> ToolCircuitSnapshot:
+        breaker = self._get(tool_name)
+        return ToolCircuitSnapshot(
+            state=breaker.state.value,
+            consecutive_failures=breaker.consecutive_failures,
+        )
+
+    def snapshots(self) -> Dict[str, ToolCircuitSnapshot]:
+        with self._lock:
+            names = list(self._breakers)
+        return {name: self.snapshot(name) for name in names}

@@ -4,10 +4,12 @@ my_agent.tools.builtins.shell — PowerShell 执行工具
 """
 from __future__ import annotations
 
+import re
 import subprocess
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from ..base import BaseTool
+from ..retention import format_text_notice, retain_text
 
 
 class PowerShellTool(BaseTool):
@@ -31,56 +33,35 @@ class PowerShellTool(BaseTool):
     tags = ["system", "shell"]
     permission_level = "deny"  # arbitrary shell execution requires explicit override
 
-    # 危险命令模式（按类别分组）
-    _BLOCK_PATTERNS = {
-        # 文件系统破坏
-        "rm ": "删除文件",
-        "del ": "删除文件",
-        "Remove-Item": "删除文件/目录",
-        "format-*": "格式化磁盘",
-        "Clear-Content": "清空文件内容",
-        "Truncate-Content": "截断文件内容",
-        # 远程代码执行
-        "invoke-expression": "动态代码执行",
-        "iex": "动态代码执行(IEX别名)",
-        "invoke-restmethod": "HTTP请求(可能被用于下载恶意脚本)",
-        "irm": "HTTP请求(IRM别名)",
-        "invoke-webrequest": "HTTP请求",
-        "iwrm": "HTTP请求(IWRM别名)",
-        "download-string": "下载字符串",
-        "invoke-command": "远程命令执行",
-        # 系统配置修改
-        "set-executionpolicy": "修改执行策略",
-        "reg add": "修改注册表",
-        "reg delete": "修改注册表",
-        "net user": "用户管理",
-        "net localgroup": "用户组管理",
-        "shutdown": "关机/重启",
-        "restart-computer": "重启计算机",
-        "stop-computer": "关闭计算机",
-        # 数据泄露
-        "certutil -encode": "编码文件(可能用于隐藏数据)",
-        "certutil -decode": "解码文件(可能用于执行隐藏代码)",
-    }
+    # Arbitrary PowerShell is intentionally unavailable.  Even though this tool
+    # is permission_level="deny", execute() can be called directly by code or a
+    # future permission override; a substring blacklist is not a security boundary.
+    # Keep only non-mutating, no-composition diagnostics.
+    _SAFE_COMMANDS = frozenset({"get-date", "get-location", "get-process", "get-service"})
+    _SAFE_COMMAND_RE = re.compile(
+        r"^\s*(get-date|get-location|get-process|get-service)\s*$", re.IGNORECASE
+    )
+
+    @classmethod
+    def _validate_command(cls, command: str) -> Optional[str]:
+        """Return a reason when *command* is outside the safe diagnostic subset."""
+        if not command:
+            return "未提供 PowerShell 命令"
+        # Reject multiline input and every PowerShell composition/interpolation
+        # primitive.  No aliases or command arguments are accepted, so an
+        # allowlisted command cannot be redirected to a sensitive path.
+        if any(token in command for token in ("\r", "\n", ";", "|", "&", "`", "$", "(", ")", "<", ">")):
+            return "命令包含组合、重定向或动态执行语法"
+        match = cls._SAFE_COMMAND_RE.fullmatch(command)
+        if not match or match.group(1).casefold() not in cls._SAFE_COMMANDS:
+            return "仅允许只读诊断命令: Get-Date、Get-Location、Get-Process、Get-Service"
+        return None
 
     def execute(self, params: Dict[str, Any]) -> str:
         command = str(params.get("command", "")).strip()
-        if not command:
-            return "错误:未提供 PowerShell 命令"
-
-        cmd_lower = command.lower()
-        for pattern, reason in self._BLOCK_PATTERNS.items():
-            if pattern.lower() in cmd_lower:
-                return (
-                    f"错误:拒绝执行危险命令 '{pattern}'（{reason}）。"
-                    "如需此操作，请明确说明并获得确认。"
-                )
-
-        # 检查命令链接 + 可疑操作（避免 $ 字符误杀，PowerShell 变量极常见）
-        if any(ch in command for ch in [';', '&', '`']) and any(
-            p in cmd_lower for p in ['http', 'download', 'invoke', 'comobj']
-        ):
-            return "错误:拒绝执行包含可疑模式的复合命令。"
+        rejection = self._validate_command(command)
+        if rejection:
+            return f"错误:拒绝执行 PowerShell 命令（{rejection}）。"
 
         try:
             ps_cmd = (
@@ -118,9 +99,10 @@ class PowerShellTool(BaseTool):
                     cleaned.append("?")
 
             text = "".join(cleaned).strip()
-            if len(text) > 4000:
-                text = text[:3900] + "\n...（输出截断，超过4000字符）"
-            return text or "命令执行成功，无输出。"
+            retained, omitted = retain_text(text, 4000)
+            return (retained or "命令执行成功，无输出。") + format_text_notice(
+                "PowerShell 输出", omitted, "请缩小命令输出范围。"
+            )
 
         except subprocess.TimeoutExpired:
             return "错误:命令执行超时（15秒限制）"

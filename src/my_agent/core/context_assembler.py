@@ -696,11 +696,13 @@ def fit_messages_to_budget(
     """把会话消息裁剪到 context_window * target_ratio 以内。
 
     规则 (engine._call_llm/_acall_llm 组装路径):
-    - system 消息(含摘要边界)始终保留、置于最前
+    - 首条规范 system prompt 始终保留、置于最前；摘要边界等辅助 system
+      内容仅在预算允许时保留
     - 历史消息按 旧→新 顺序保留,超预算时从最旧的非 system 消息开始成组丢弃
       (assistant 的 tool_calls 与其后的 tool 结果作为一组,避免孤儿 tool 消息)
     - 最新一条(当前问题)始终保留在最后
-    - 目标利用率 40–60%: 以 target_ratio (默认 0.6) 为硬上限
+    - ``target_ratio`` 是尽力达到的上限。若首条 system prompt 或当前问题
+      单独已超限，函数保留它们并记录告警，而不会静默截断指令或用户输入。
     """
     if not messages:
         return []
@@ -709,7 +711,26 @@ def fit_messages_to_budget(
     system_msgs = [m for m in messages if m.role.value == "system"]
     history = [m for m in messages if m.role.value != "system"]
 
-    used = sum(_message_tokens(m) for m in system_msgs)
+    # Keep the canonical prompt, but do not let a large compaction summary take
+    # the whole budget before the current turn is considered.  SessionState puts
+    # the canonical prompt first and marks summaries explicitly.
+    primary_system: List["Message"] = []
+    auxiliary_system: List["Message"] = []
+    for message in system_msgs:
+        if not primary_system and not getattr(message, "metadata", {}).get("summary_boundary"):
+            primary_system.append(message)
+        else:
+            auxiliary_system.append(message)
+
+    used = sum(_message_tokens(m) for m in primary_system)
+    kept_system = list(primary_system)
+    for message in auxiliary_system:
+        msg_tokens = _message_tokens(message)
+        if used + msg_tokens <= budget:
+            kept_system.append(message)
+            used += msg_tokens
+        else:
+            logger.info("Dropping auxiliary system context to honor message budget")
 
     # 把历史按 "组" 切分: assistant(tool_calls) + 其 tool 结果 是一组
     groups: List[List["Message"]] = []
@@ -741,7 +762,7 @@ def fit_messages_to_budget(
     while kept and kept[0].role.value == "tool":
         kept.pop(0)
 
-    result = system_msgs + kept
+    result = kept_system + kept
     pct = (sum(_message_tokens(m) for m in result) / context_window * 100
            if context_window else 0)
     if pct > 60:

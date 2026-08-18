@@ -1,0 +1,751 @@
+
+-- 760 900 --
+ 760|    # ���� sync public API (����) ����������������������������������������������������������������
+ 761|
+ 762|    def run(self, user_input: str, max_tool_calls: int = 10, context=None,
+ 763|            session: Optional[SessionState] = None) -> str:
+ 764|        """����һ���û���Ϣ�����������ظ���context ��Ϊ dict �� QueryContext��"""
+ 765|        ctx = (QueryContext.from_dict(context) if isinstance(context, dict)
+ 766|               else (context or QueryContext()))
+ 767|        sess = session or self.session
+ 768|        self.hooks.fire(HookPoint.QUERY_START,
+ 769|                        data={"user_input": user_input, "context": ctx})
+ 770|        user_input = self._scan_user_input(user_input)
+ 771|        sess.append(Message.user(user_input))
+ 772|        result = self._loop(max_tool_calls, context=ctx, session=sess)
+ 773|        self.hooks.fire(HookPoint.QUERY_END, data={"result": result})
+ 774|        return result
+ 775|
+ 776|    def run_stream(self, user_input: str, max_tool_calls: int = 10,
+ 777|                   session: Optional[SessionState] = None
+ 778|                   ) -> Generator[str, None, None]:
+ 779|        """ͬ��α��ʽ (����): �����깤���ִΣ����������� SSE ��ʽ��"""
+ 780|        sess = session or self.session
+ 781|        self.hooks.fire(HookPoint.QUERY_START, data={"user_input": user_input})
+ 782|        user_input = self._scan_user_input(user_input)
+ 783|        sess.append(Message.user(user_input))
+ 784|        self._loop(max_tool_calls, capture_last=True, session=sess)
+ 785|        if self._llm_stream_fn:
+ 786|            yield from self._llm_stream_fn()
+ 787|        else:
+ 788|            last = self._last_assistant_content(sess)
+ 789|            if last:
+ 790|                for ch in last:
+ 791|                    yield f"data: {json.dumps({'token': ch}, ensure_ascii=False)}\n\n"
+ 792|        yield "data: [DONE]\n\n"
+ 793|
+ 794|    # ���� async public API ��������������������������������������������������������������������������
+ 795|
+ 796|    async def arun(self, query: str, session: Optional[SessionState] = None,
+ 797|                   ctx: Optional[QueryContext] = None,
+ 798|                   max_tool_calls: int = 10) -> Dict[str, Any]:
+ 799|        """�첽ִ��,���� {"content","stop_reason","usage","iterations"}��"""
+ 800|        result: Dict[str, Any] = {}
+ 801|        async for event in self.arun_stream(query, session=session, ctx=ctx,
+ 802|                                            max_tool_calls=max_tool_calls,
+ 803|                                            _collect_only=True):
+ 804|            if event.get("done"):
+ 805|                result = event
+ 806|        return {
+ 807|            "content": result.get("content", ""),
+ 808|            "stop_reason": result.get("stop_reason", _STOP_EMPTY),
+ 809|            "stop_detail": result.get("stop_detail", ""),
+ 810|            "usage": result.get("usage", {}),
+ 811|            "iterations": result.get("iterations", 0),
+ 812|            "model": result.get("model"),
+ 813|            "fallback_reason": result.get("fallback_reason"),
+ 814|        }
+ 815|
+ 816|    async def arun_stream(self, query: str,
+ 817|                          session: Optional[SessionState] = None,
+ 818|                          ctx: Optional[QueryContext] = None,
+ 819|                          max_tool_calls: int = 10,
+ 820|                          session_id: str = "",
+ 821|                          _collect_only: bool = False
+ 822|                          ) -> AsyncIterator[Dict[str, Any]]:
+ 823|        """����ʽ: ÿ�� LLM ���� yield token,����ִ�� yield progress,��� done ֡��
+ 824|
+ 825|        ֡��ʽ:
+ 826|            {"token": "..."}                       �� �����ı�
+ 827|            {"progress": "tool:<name>"}            �� ���߼���ִ��
+ 828|            {"done": true, "session_id", "usage", "stop_reason", "content"}
+ 829|        """
+ 830|        if self._async_call_fn is None and self._async_stream_fn is None:
+ 831|            raise RuntimeError("δ���� async LLM ����������ͨ�� set_async_llm() ����")
+ 832|        ctx = (QueryContext.from_dict(ctx) if isinstance(ctx, dict)
+ 833|               else (ctx or QueryContext()))
+ 834|        sess = session or self.session
+ 835|        guard = _Guardrails(max_tokens_budget=ctx.max_tokens_budget)
+ 836|        model = self._select_model(ctx)
+ 837|        semaphore = asyncio.Semaphore(self.tool_concurrency)
+ 838|
+ 839|        self.hooks.fire(HookPoint.QUERY_START,
+ 840|                        data={"user_input": query, "context": ctx})
+ 841|        query = self._scan_user_input(query)
+ 842|        sess.append(Message.user(query))
+ 843|
+ 844|        final_content = ""
+ 845|        stop_reason: Optional[str] = None
+ 846|        stop_detail = ""
+ 847|        iteration = 0
+ 848|        executed_tool_results: Dict[str, str] = {}
+ 849|        terminal_action_result = ""
+ 850|
+ 851|        for iteration in range(1, max_tool_calls + 1):
+ 852|            messages = self._assemble_messages(sess)
+ 853|            schemas = (self.tool_registry.all_schemas()
+ 854|                       if ctx.metadata.get("tools_enabled", True)
+ 855|                       else [])
+ 856|            # Ԥ��բ��: ��ǰ�ù���ֵ check (ֻ��), policy ���� ����/����/�ܾ���
+ 857|            # BudgetExceededError ֱ������÷����� (�� HTTP ��ת 402)��
+ 858|            call_model, degrade_note = self._apply_budget_policy(
+ 859|                ctx, model, self._estimate_needed_tokens(messages))
+ 860|
+ 861|            # ��ģ�� + fallback ��: �������, ȫʧ�ܲ���
+ 862|            candidates = self._model_candidates(call_model)
+ 863|            content, tool_calls, usage = "", [], {}
+ 864|            used_model: Optional[str] = None
+ 865|            fallback_reason: Optional[str] = degrade_note
+ 866|            call_error: Optional[Exception] = None
+ 867|            emitted = False
+ 868|
+ 869|            for attempt_no, cand in enumerate(candidates):
+ 870|                hook_data = {"iteration": iteration, "request_id": ctx.request_id,
+ 871|                             "context": ctx, "model": cand,
+ 872|                             "attempt": attempt_no, "fallback_reason": fallback_reason}
+ 873|                self.hooks.fire(HookPoint.LLM_START, data=hook_data)
+ 874|                content, tool_calls, usage = "", [], {}
+ 875|                try:
+ 876|                    if self._async_stream_fn is not None:
+ 877|                        async for ev in self._acall_stream(messages, schemas, cand):
+ 878|                            etype = ev.get("type")
+ 879|                            if etype == "delta":
+ 880|                                piece = ev.get("content") or ""
+ 881|                                if piece:
+ 882|                                    content += piece
+ 883|                                    if not _collect_only:
+ 884|                                        emitted = True
+ 885|                                        yield {"token": piece}
+ 886|                            elif etype == "final":
+ 887|                                content = ev.get("content") or content
+ 888|                                tool_calls = ev.get("tool_calls") or []
+ 889|                                usage = ev.get("usage") or {}
+ 890|                    else:
+ 891|                        content, tool_calls, usage = await self._acall_llm(
+ 892|                            messages, schemas, cand)
+ 893|                        if content and not _collect_only:
+ 894|                            emitted = True
+ 895|                            yield {"token": content}
+ 896|                    used_model, call_error = cand, None
+ 897|                    break
+ 898|                except Exception as e:  # noqa: BLE001 �� ���� fallback
+ 899|                    call_error = e
+ 900|                    self.hooks.fire(HookPoint.LLM_END, data={
+
+-- 900 1035 --
+ 900|                    self.hooks.fire(HookPoint.LLM_END, data={
+ 901|                        **hook_data, "success": False, "error": str(e)})
+ 902|                    if attempt_no + 1 >= len(candidates) or emitted:
+ 903|                        # �ޱ���ģ��, ������ͻ����¹� token (�ٻ�ģ�ͻᴮ̨)
+ 904|                        break
+ 905|                    fallback_reason = f"{cand or '<default>'}:{type(e).__name__}"
+ 906|                    logger.warning("LLM call failed on %s (%s: %s) �� falling back to %s",
+ 907|                                   cand, type(e).__name__, e, candidates[attempt_no + 1])
+ 908|
+ 909|            if call_error is not None:
+ 910|                stop_reason = _STOP_LLM_ERROR
+ 911|                stop_detail = f"{type(call_error).__name__}: {call_error}"
+ 912|                if len(candidates) > 1:
+ 913|                    stop_detail += f" (�ѳ��� {len(candidates)} ��ģ��)"
+ 914|                break
+ 915|
+ 916|            # ʵ��ʹ�õ�ģ��д�� ctx.metadata, �� trace / �ɱ�����
+ 917|            ctx.metadata["model_used"] = used_model
+ 918|            if fallback_reason:
+ 919|                ctx.metadata["fallback_reason"] = fallback_reason
+ 920|
+ 921|            # LLM_END hook �ص� usage �� cost_tracker ���� + gateway Ԥ�� reconcile
+ 922|            self.hooks.fire(HookPoint.LLM_END, data={
+ 923|                "iteration": iteration, "request_id": ctx.request_id,
+ 924|                "context": ctx, "success": True, "usage": usage,
+ 925|                "model": used_model, "fallback_reason": fallback_reason,
+ 926|                "content_len": len(content or ""),
+ 927|            })
+ 928|
+ 929|            fallback = estimate_tokens(content or "") + sum(
+ 930|                estimate_tokens(m.get("content") or "") for m in messages)
+ 931|            guard.record_usage(usage, fallback_tokens=fallback)
+ 932|            guard.record_assistant_output(content, tool_calls)
+ 933|
+ 934|            tc_objs = [
+ 935|                _apply_explicit_tool_constraints(query, ToolCall(
+ 936|                    id=tc.id,
+ 937|                    name=tc.name,
+ 938|                    arguments=_canonical_tool_arguments(tc.name, tc.arguments),
+ 939|                ))
+ 940|                for tc in self._coerce_tool_calls(tool_calls)
+ 941|            ]
+ 942|            explicit_plan = _explicit_procedural_tool_plan(query) if iteration == 1 else None
+ 943|            if explicit_plan and all(self.tool_registry.get_definition(name) is not None for name, _ in explicit_plan):
+ 944|                # Execute only an unambiguous, user-written inspection plan;
+ 945|                # model-proposed exploratory calls are discarded here.
+ 946|                tc_objs = [
+ 947|                    ToolCall(id=f"explicit-plan-{index}", name=name,
+ 948|                             arguments=_canonical_tool_arguments(name, arguments))
+ 949|                    for index, (name, arguments) in enumerate(explicit_plan, 1)
+ 950|                ]
+ 951|            assistant_msg = Message.assistant(content or "", tool_calls=tc_objs)
+ 952|            sess.append(assistant_msg)
+ 953|
+ 954|            if guard.tripped:
+ 955|                stop_reason, stop_detail = guard.stop_reason, guard.stop_detail
+ 956|                final_content = content or final_content
+ 957|                break
+ 958|
+ 959|            if not tc_objs:
+ 960|                # ����ж�: �� tool_calls �ҷǿ����� => completed
+ 961|                if (content or "").strip():
+ 962|                    final_content = content
+ 963|                    stop_reason = _STOP_COMPLETED
+ 964|                else:
+ 965|                    stop_reason = _STOP_EMPTY
+ 966|                    stop_detail = "ģ�ͷ��ؿ��������޹��ߵ���"
+ 967|                break
+ 968|
+ 969|            # ����ִ�� (ͬ�������� to_thread + �н��ź���)
+ 970|            for tc in tc_objs:
+ 971|                canonical_arguments = _canonical_tool_arguments(tc.name, tc.arguments)
+ 972|                if canonical_arguments != tc.arguments:
+ 973|                    tc = ToolCall(id=tc.id, name=tc.name, arguments=canonical_arguments)
+ 974|                fingerprint = _tool_call_fingerprint(tc)
+ 975|                if fingerprint in executed_tool_results:
+ 976|                    # A repeated successful call cannot add evidence, so return
+ 977|                    # its cached result.  Repeated errors are different: record
+ 978|                    # the same error again so the existing circuit breaker can
+ 979|                    # stop the LLM/tool loop with an honest failure reason.
+ 980|                    cached_result = executed_tool_results[fingerprint]
+ 981|                    cached_is_error = self._is_tool_error(cached_result)
+ 982|                    if cached_is_error:
+ 983|                        guard.record_tool_result(tc.name, cached_result, True)
+ 984|                        sess.append(Message.tool_result(tc.id, cached_result, is_error=True))
+ 985|                        continue
+ 986|                    final_content = cached_result
+ 987|                    stop_reason = _STOP_COMPLETED
+ 988|                    break
+ 989|                if not _collect_only:
+ 990|                    # Include the canonical arguments used for validation/execution,
+ 991|                    # so telemetry and online evaluation do not lose default values.
+ 992|                    yield {
+ 993|                        "progress": f"tool:{tc.name}",
+ 994|                        "tool_call": {"name": tc.name, "arguments": tc.arguments},
+ 995|                    }
+ 996|                result = await self._aexecute_tool(tc, semaphore)
+ 997|                executed_tool_results[fingerprint] = result
+ 998|                is_error = self._is_tool_error(result)
+ 999|                guard.record_tool_result(tc.name, result, is_error)
+1000|                sess.append(Message.tool_result(tc.id, result, is_error=is_error))
+1001|                if tc.name in _TERMINAL_ACTION_TOOLS:
+1002|                    # Test/lint output is itself the requested artifact. Stop
+1003|                    # here so a model cannot repeat an expensive action.
+1004|                    terminal_action_result = result
+1005|                    final_content = terminal_action_result
+1006|                    stop_reason = _STOP_COMPLETED
+1007|                    break
+1008|
+1009|            if explicit_plan and not guard.tripped and stop_reason is None:
+1010|                # The requested plan is complete. Returning the inspected
+1011|                # evidence directly avoids an unnecessary follow-up model turn
+1012|                # and makes these simple operational workflows deterministic.
+1013|                final_content = "\n\n".join(
+1014|                    executed_tool_results[_tool_call_fingerprint(tc)] for tc in tc_objs
+1015|                    if _tool_call_fingerprint(tc) in executed_tool_results
+1016|                )
+1017|                stop_reason = _STOP_COMPLETED
+1018|
+1019|            if stop_reason is not None:
+1020|                break
+1021|
+1022|            if guard.tripped:
+1023|                stop_reason, stop_detail = guard.stop_reason, guard.stop_detail
+1024|                break
+1025|
+1026|            # ѹ���������ʽ·��ͬ��ִ��
+1027|            if sess.should_compact():
+1028|                self.hooks.fire(HookPoint.SESSION_COMPACT)
+1029|                sess.compact()
+1030|        else:
+1031|            stop_reason = _STOP_MAX_TOOL_CALLS
+1032|            stop_detail = f"���ߵ����ִδﵽ���� {max_tool_calls}"
+1033|
+1034|        if stop_reason is None:
+1035|            stop_reason = _STOP_EMPTY
+
+-- 1035 1215 --
+1035|            stop_reason = _STOP_EMPTY
+1036|
+1037|        if not final_content and stop_reason != _STOP_COMPLETED:
+1038|            final_content = self._stop_message(stop_reason, stop_detail)
+1039|
+1040|        final_content, _output_scan = self._scan_llm_output(final_content)
+1041|
+1042|        self.hooks.fire(HookPoint.QUERY_END, data={
+1043|            "result": final_content, "stop_reason": stop_reason,
+1044|            "tokens_used": guard.tokens_used,
+1045|            "output_scan": {
+1046|                "is_safe": _output_scan.is_safe,
+1047|                "threats": _output_scan.threats,
+1048|            },
+1049|        })
+1050|        yield {
+1051|            "done": True,
+1052|            "session_id": session_id,
+1053|            "content": final_content,
+1054|            "stop_reason": stop_reason,
+1055|            "stop_detail": stop_detail,
+1056|            "usage": {"total_tokens": guard.tokens_used},
+1057|            "iterations": iteration,
+1058|            "model": ctx.metadata.get("model_used"),
+1059|            "fallback_reason": ctx.metadata.get("fallback_reason"),
+1060|        }
+1061|
+1062|    # ���� async internals ����������������������������������������������������������������������������
+1063|
+1064|    async def _acall_llm(self, messages, schemas, model):
+1065|        try:
+1066|            out = await self._async_call_fn(messages, schemas, model=model)
+1067|        except TypeError:
+1068|            out = await self._async_call_fn(messages, schemas)
+1069|        if isinstance(out, tuple) and len(out) == 3:
+1070|            return out
+1071|        raise RuntimeError("achat �������뷵�� (content, tool_calls, usage) ��Ԫ��")
+1072|
+1073|    def _acall_stream(self, messages, schemas, model):
+1074|        try:
+1075|            return self._async_stream_fn(messages, schemas, model=model)
+1076|        except TypeError:
+1077|            return self._async_stream_fn(messages, schemas)
+1078|
+1079|    @staticmethod
+1080|    def _is_transient_tool_error(error: str) -> bool:
+1081|        """Classify temporary dependency failures without treating input errors as transient."""
+1082|        normalized = (error or "").lower()
+1083|        return any(marker in normalized for marker in _TRANSIENT_ERROR_MARKERS)
+1084|
+1085|    def _tool_circuit_tracking_allowed(
+1086|        self, tool_name: str, definition: Optional[Any], error: str,
+1087|    ) -> bool:
+1088|        """Only safe read-only tools contribute failures to the shared circuit."""
+1089|        return (
+1090|            tool_name in _READ_ONLY_TOOL_NAMES
+1091|            and getattr(definition, "permission_level", "allow") == "allow"
+1092|            and self._is_transient_tool_error(error)
+1093|        )
+1094|
+1095|    def _tool_retry_allowed(self, tool_name: str, definition: Optional[Any], error: str) -> bool:
+1096|        """Retry only safe, transient failures; never retry invalid or denied calls."""
+1097|        return self.tool_max_retries > 0 and self._tool_circuit_tracking_allowed(
+1098|            tool_name, definition, error,
+1099|        )
+1100|
+1101|    @staticmethod
+1102|    def _tool_retry_delay(attempt: int, base_seconds: float) -> float:
+1103|        """Small bounded exponential backoff plus jitter for interactive work."""
+1104|        return min(1.0, base_seconds * (2 ** attempt) + random.uniform(0.0, 0.05))
+1105|
+1106|    def _record_tool_metric(self, name: str, labels: Optional[Dict[str, str]] = None,
+1107|                            duration_ms: Optional[float] = None) -> None:
+1108|        if self._metrics is None:
+1109|            return
+1110|        try:
+1111|            self._metrics.increment_counter(name, labels=labels)
+1112|            if duration_ms is not None:
+1113|                self._metrics.observe_histogram("tool_execution_latency", duration_ms, labels=labels)
+1114|        except Exception:  # pragma: no cover
+1115|            logger.debug("tool metric recording failed", exc_info=True)
+1116|
+1117|    def tool_resilience_snapshot(self) -> Dict[str, Dict[str, Any]]:
+1118|        """Return shared per-tool circuit state for health and dashboards."""
+1119|        return {
+1120|            name: {"state": item.state, "consecutive_failures": item.consecutive_failures}
+1121|            for name, item in self._tool_circuits.snapshots().items()
+1122|        }
+1123|
+1124|    def _tool_preflight_error(self, tc: ToolCall) -> tuple[Optional[Any], Optional[Any], Optional[str]]:
+1125|        handler = self.tool_registry.get_handler(tc.name)
+1126|        if handler is None:
+1127|            return None, None, f"\u9519\u8bef:\u672a\u77e5\u5de5\u5177:{tc.name}"
+1128|        definition = self.tool_registry.get_definition(tc.name)
+1129|        permission = getattr(definition, "permission_level", "allow") if definition else "allow"
+1130|        if permission == "deny":
+1131|            logger.warning("Tool %s blocked by permission_level=deny", tc.name)
+1132|            return handler, definition, f"\u5de5\u5177\u88ab\u62d2\u7edd(\u6743\u9650\u7ea7\u522b: deny): {tc.name}"
+1133|        if permission == "ask":
+1134|            results = self.hooks.fire(HookPoint.TOOL_PERMISSION_REQUEST, data={
+1135|                "tool_name": tc.name, "arguments": tc.arguments, "permission_level": permission,
+1136|            })
+1137|            for _key, value in results.items():
+1138|                if isinstance(value, dict) and value.get("allowed") is False:
+1139|                    reason = value.get("reason", "\u6743\u9650\u88ab\u62d2\u7edd")
+1140|                    return handler, definition, f"\u5de5\u5177\u88ab\u7528\u6237\u62d2\u7edd: {tc.name} - {reason}"
+1141|        params = tc.arguments if isinstance(tc.arguments, dict) else {}
+1142|        validation_err = self._validate_tool_args(tc.name, params, definition)
+1143|        if validation_err:
+1144|            logger.warning("Tool %s args failed schema validation: %s", tc.name, validation_err)
+1145|            return handler, definition, validation_err
+1146|        return handler, definition, None
+1147|
+1148|    @staticmethod
+1149|    def _tool_circuit_error(tool_name: str, state: str) -> str:
+1150|        return f"\u9519\u8bef:\u5de5\u5177\u7194\u65ad\u4e2d [{tool_name}]: \u5f53\u524d\u72b6\u6001 {state}\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5"
+1151|
+1152|    async def _aexecute_tool(self, tc: ToolCall, semaphore: asyncio.Semaphore) -> str:
+1153|        _hdata = {"tool_name": tc.name, "arguments": tc.arguments}
+1154|        self.hooks.fire(HookPoint.TOOL_CALL_BEFORE, data=_hdata)
+1155|        handler, definition, preflight_error = self._tool_preflight_error(tc)
+1156|        if preflight_error:
+1157|            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": preflight_error})
+1158|            self._record_tool_metric("tool_calls", {"tool": tc.name, "outcome": "rejected"})
+1159|            return preflight_error
+1160|        allowed, snapshot = self._tool_circuits.allow_request(tc.name)
+1161|        if not allowed:
+1162|            error_msg = self._tool_circuit_error(tc.name, snapshot.state)
+1163|            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg, "circuit_state": snapshot.state})
+1164|            self._record_tool_metric("tool_circuit_rejections", {"tool": tc.name, "state": snapshot.state})
+1165|            return error_msg
+1166|        params = tc.arguments if isinstance(tc.arguments, dict) else {}
+1167|        for attempt in range(self.tool_max_retries + 1):
+1168|            started = time.monotonic()
+1169|            try:
+1170|                async with semaphore:
+1171|                    operation = handler(params) if asyncio.iscoroutinefunction(handler) else asyncio.to_thread(handler, params)
+1172|                    result = await asyncio.wait_for(operation, timeout=self.tool_timeout_seconds)
+1173|                elapsed_ms = (time.monotonic() - started) * 1000
+1174|                # Built-in handlers conventionally return a human-readable error
+1175|                # string instead of raising.  Feed those through the same retry /
+1176|                # circuit classification path as raised failures.
+1177|                if isinstance(result, str) and self._is_tool_error(result):
+1178|                    error_msg = result
+1179|                    raise _ReturnedToolError(error_msg)
+1180|                self._tool_circuits.record_success(tc.name)
+1181|                self.hooks.fire(HookPoint.TOOL_CALL_AFTER, data={**_hdata, "result": result, "attempt": attempt + 1})
+1182|                self._record_tool_metric("tool_calls", {"tool": tc.name, "outcome": "success"}, elapsed_ms)
+1183|                return result
+1184|            except _ReturnedToolError as exc:
+1185|                error_msg = str(exc)
+1186|            except asyncio.TimeoutError:
+1187|                error_msg = f"\u9519\u8bef:\u5de5\u5177\u6267\u884c\u8d85\u65f6 [{tc.name}]: \u8d85\u8fc7 {self.tool_timeout_seconds:.1f} \u79d2"
+1188|            except Exception as exc:
+1189|                error_msg = f"\u5de5\u5177\u6267\u884c\u5931\u8d25 [{tc.name}]:{type(exc).__name__}: {exc}"
+1190|            elapsed_ms = (time.monotonic() - started) * 1000
+1191|            retryable = self._tool_retry_allowed(tc.name, definition, error_msg)
+1192|            if retryable and attempt < self.tool_max_retries:
+1193|                self._record_tool_metric("tool_retries", {"tool": tc.name, "reason": "transient"}, elapsed_ms)
+1194|                await asyncio.sleep(self._tool_retry_delay(attempt, self.tool_retry_base_seconds))
+1195|                continue
+1196|            circuit_trackable = self._tool_circuit_tracking_allowed(tc.name, definition, error_msg)
+1197|            if circuit_trackable:
+1198|                snapshot = self._tool_circuits.record_transient_failure(tc.name)
+1199|                labels = {"tool": tc.name, "outcome": "transient_failure", "circuit_state": snapshot.state}
+1200|            else:
+1201|                self._tool_circuits.release_probe(tc.name)
+1202|                labels = {"tool": tc.name, "outcome": "failure"}
+1203|            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg, "attempt": attempt + 1})
+1204|            self._record_tool_metric("tool_calls", labels, elapsed_ms)
+1205|            return error_msg
+1206|        raise AssertionError("unreachable")
+1207|
+1208|    @staticmethod
+1209|    def _coerce_tool_calls(tool_calls: List[Any]) -> List[ToolCall]:
+1210|        out: List[ToolCall] = []
+1211|        for i, tc in enumerate(tool_calls or []):
+1212|            if isinstance(tc, ToolCall):
+1213|                out.append(tc)
+1214|            elif isinstance(tc, dict):
+1215|                args = tc.get("arguments")
+
+-- 1215 1415 --
+1215|                args = tc.get("arguments")
+1216|                if isinstance(args, str):
+1217|                    try:
+1218|                        args = json.loads(args)
+1219|                    except (json.JSONDecodeError, TypeError):
+1220|                        args = {}
+1221|                out.append(ToolCall(
+1222|                    id=tc.get("id") or f"call_{i}",
+1223|                    name=tc.get("name") or (tc.get("function") or {}).get("name", ""),
+1224|                    arguments=args if isinstance(args, dict) else {},
+1225|                ))
+1226|        return out
+1227|
+1228|    @staticmethod
+1229|    def _is_tool_error(result: str) -> bool:
+1230|        return result.startswith(("\u9519\u8bef:", "\u5de5\u5177\u6267\u884c\u5931\u8d25", "MCP \u8c03\u7528\u5931\u8d25", "\u53c2\u6570\u9a8c\u8bc1\u5931\u8d25"))
+1231|
+1232|    @staticmethod
+1233|    def _stop_message(stop_reason: str, detail: str) -> str:
+1234|        mapping = {
+1235|            _STOP_MAX_TOOL_CALLS: "�Ѵﵽ���ߵ����ִ����ޣ�������ǰ������",
+1236|            _STOP_REPEATED_ERROR: "��������������ͬ�������۶�ֹͣ��",
+1237|            _STOP_NO_PROGRESS: "��⵽�ظ��������ʵ�ʽ�չ����ֹͣ��",
+1238|            _STOP_BUDGET: "�Ѵﵽ token/�ɱ�Ԥ�����ޣ�������ǰ������",
+1239|            _STOP_LLM_ERROR: "LLM ����ʧ�ܣ�������������á�",
+1240|            _STOP_CONTENT_FILTER: "[���ݱ���ȫ����]",
+1241|            _STOP_EMPTY: "ģ��δ������Ч���ݡ�",
+1242|        }
+1243|        base = mapping.get(stop_reason, "������ֹͣ��")
+1244|        return f"{base} ({detail})" if detail else base
+1245|
+1246|    # ���� sync tool loop (����) ������������������������������������������������������������������
+1247|
+1248|    def _loop(self, max_tool_calls: int, capture_last: bool = False,
+1249|              context: Optional[QueryContext] = None,
+1250|              session: Optional[SessionState] = None) -> str:
+1251|        sess = session or self.session
+1252|        ctx = context or QueryContext()
+1253|        guard = _Guardrails(max_tokens_budget=ctx.max_tokens_budget)
+1254|        last_response = ""
+1255|
+1256|        for iteration in range(max_tool_calls):
+1257|            _hook_data = {"iteration": iteration, "request_id": ctx.request_id,
+1258|                          "context": ctx}
+1259|            self.hooks.fire(HookPoint.LLM_START, data=_hook_data)
+1260|            response = self._call_llm(sess)
+1261|            usage = self._extract_usage(response)
+1262|            self.hooks.fire(HookPoint.LLM_END, data={
+1263|                **_hook_data, "success": response is not None, "usage": usage})
+1264|
+1265|            if response is None:
+1266|                return self._stop_message(_STOP_LLM_ERROR, "")
+1267|
+1268|            choice = response.choices[0]
+1269|            finish_reason = getattr(choice, "finish_reason", None)
+1270|            msg_attr = getattr(choice, "message", None)
+1271|            if msg_attr is None:
+1272|                return "API ���ؿ���Ϣ"
+1273|
+1274|            assistant_msg = Message.from_openai_choice(msg_attr)
+1275|            if assistant_msg.tool_calls:
+1276|                assistant_msg.tool_calls = [
+1277|                    ToolCall(id=tc.id, name=tc.name,
+1278|                             arguments=_canonical_tool_arguments(tc.name, tc.arguments))
+1279|                    for tc in assistant_msg.tool_calls
+1280|                ]
+1281|            guard.record_usage(usage)
+1282|            guard.record_assistant_output(assistant_msg.content or "",
+1283|                                          assistant_msg.tool_calls)
+1284|
+1285|            if capture_last and not assistant_msg.tool_calls:
+1286|                last_response = assistant_msg.content or ""
+1287|                sess.append(assistant_msg)
+1288|                break
+1289|
+1290|            if finish_reason == "content_filter":
+1291|                return self._stop_message(_STOP_CONTENT_FILTER, "")
+1292|
+1293|            if guard.tripped:
+1294|                sess.append(assistant_msg)
+1295|                return self._stop_message(guard.stop_reason, guard.stop_detail)
+1296|
+1297|            if assistant_msg.tool_calls:
+1298|                sess.append(assistant_msg)
+1299|                for tc in assistant_msg.tool_calls:
+1300|                    result = self._execute_tool(tc)
+1301|                    is_error = self._is_tool_error(result)
+1302|                    guard.record_tool_result(tc.name, result, is_error)
+1303|                    sess.append(Message.tool_result(tc.id, result, is_error=is_error))
+1304|                if guard.tripped:
+1305|                    return self._stop_message(guard.stop_reason, guard.stop_detail)
+1306|                if sess.should_compact():
+1307|                    self.hooks.fire(HookPoint.SESSION_COMPACT)
+1308|                    sess.compact()
+1309|                continue
+1310|
+1311|            # Final response (no tool calls) �� completed
+1312|            sess.append(assistant_msg)
+1313|            last_response = assistant_msg.content or ""
+1314|            last_response, _output_scan = self._scan_llm_output(last_response)
+1315|            if not _output_scan.is_safe:
+1316|                self.hooks.fire(HookPoint.QUERY_END, data={
+1317|                    "result": last_response, "stop_reason": "completed",
+1318|                    "tokens_used": 0,
+1319|                    "output_scan": {
+1320|                        "is_safe": False,
+1321|                        "threats": _output_scan.threats,
+1322|                    },
+1323|                })
+1324|            if sess.should_compact():
+1325|                self.hooks.fire(HookPoint.SESSION_COMPACT)
+1326|                sess.compact()
+1327|            return last_response
+1328|
+1329|        if capture_last:
+1330|            return last_response
+1331|        return self._stop_message(_STOP_MAX_TOOL_CALLS, f"���� {max_tool_calls}")
+1332|
+1333|    # ���� input/output scanning (defense-in-depth) ������������������������
+1334|
+1335|    def _scan_user_input(self, text: str) -> str:
+1336|        """Scan user input for injection attempts. Returns cleaned text."""
+1337|        result = scan_input(text)
+1338|        if not result.is_safe:
+1339|            logger.warning("Input injection detected: %s", result.threats)
+1340|            self.hooks.fire(HookPoint.QUERY_START,
+1341|                            data={"scan_threats": result.threats, "cleaned": True})
+1342|        return result.cleaned
+1343|
+1344|    def _scan_llm_output(self, text: str) -> tuple:
+1345|        """Scan LLM output for prompt leakage.
+1346|
+1347|        Returns (text, scan_result) where text is the original content and
+1348|        scan_result contains is_safe, threats, and cleaned fields. Callers
+1349|        pass scan_result.threats to QUERY_END hook for observability.
+1350|        """
+1351|        result = scan_output(text)
+1352|        if not result.is_safe:
+1353|            logger.warning("Output leak detected: %s", result.threats)
+1354|        return text, result
+1355|
+1356|    # ���� LLM (sync) ��������������������������������������������������������������������������������������
+1357|
+1358|    def _call_llm(self, session: Optional[SessionState] = None) -> Any:
+1359|        if self._llm_call_fn is None:
+1360|            raise RuntimeError("δ���� LLM ���ú���������ͨ�� set_llm() ����")
+1361|        sess = session or self.session
+1362|        cleaned = self._assemble_messages(sess)
+1363|        schemas = self.tool_registry.all_schemas()
+1364|        return self._llm_call_fn(cleaned, schemas)
+1365|
+1366|    @staticmethod
+1367|    def _extract_usage(response: Any) -> Dict[str, Any]:
+1368|        if response is None:
+1369|            return {}
+1370|        usage = getattr(response, "usage", None)
+1371|        if usage is None and isinstance(getattr(response, "data", None), dict):
+1372|            usage = response.data.get("usage")
+1373|        if isinstance(usage, dict):
+1374|            return usage
+1375|        if usage is not None:
+1376|            return {k: getattr(usage, k, 0) for k in
+1377|                    ("prompt_tokens", "completion_tokens", "total_tokens")}
+1378|        return {}
+1379|
+1380|    @staticmethod
+1381|    def _dedup_assistant(msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+1382|        """Ensure no two consecutive assistant messages at the tail (with logging)."""
+1383|        i = len(msgs) - 1
+1384|        removed = 0
+1385|        while i > 0 and msgs[i].get("role") == "assistant" \
+1386|                and msgs[i - 1].get("role") == "assistant":
+1387|            msgs.pop(i - 1)
+1388|            removed += 1
+1389|            i -= 1
+1390|        if removed:
+1391|            logger.warning("_dedup_assistant: removed %d consecutive assistant "
+1392|                           "message(s) at tail", removed)
+1393|        return msgs
+1394|
+1395|    def _last_assistant_content(self, session: Optional[SessionState] = None) -> str:
+1396|        sess = session or self.session
+1397|        for msg in reversed(sess.messages):
+1398|            if msg.role == Role.ASSISTANT and not msg.tool_calls:
+1399|                return msg.content or ""
+1400|        return ""
+1401|
+1402|    # ���� tool argument validation ����������������������������������������������������������
+1403|
+1404|    @staticmethod
+1405|    def _validate_tool_args(
+1406|        tool_name: str,
+1407|        params: dict,
+1408|        definition: Optional[Any],
+1409|    ) -> Optional[str]:
+1410|        """Validate tool call arguments against the tool's JSON schema.
+1411|
+1412|        Returns None when valid, or an error message string when invalid.
+1413|        Uses jsonschema if available; gracefully degrades to no-op when
+1414|        the library is not installed.
+1415|        """
+
+-- 1415 1496 --
+1415|        """
+1416|        if _jsonschema is None or definition is None:
+1417|            return None
+1418|        schema = getattr(definition, "parameters", None)
+1419|        if not schema or not isinstance(schema, dict):
+1420|            return None
+1421|        try:
+1422|            _jsonschema.validate(instance=params, schema=schema)
+1423|            return None
+1424|        except _jsonschema.ValidationError as exc:
+1425|            # Pick the most useful short message
+1426|            loc = ".".join(str(p) for p in exc.absolute_path) if exc.absolute_path else "(root)"
+1427|            expected_type = exc.schema.get("type", "?") if isinstance(exc.schema, dict) else "?"
+1428|            return (
+1429|                f"\u9519\u8bef:\u53c2\u6570\u9a8c\u8bc1\u5931\u8d25 [{tool_name}]: {exc.message}"
+1430|                f" (\u5b57\u6bb5: {loc}, \u671f\u671b: {expected_type})"
+1431|            )
+1432|        except Exception:  # pragma: no cover
+1433|            return None  # don't block on unexpected validation errors
+1434|
+1435|    # ���� tool execution (sync) ����������������������������������������������������������������
+1436|
+1437|    def _execute_tool(self, tc: ToolCall) -> str:
+1438|        _hdata = {"tool_name": tc.name, "arguments": tc.arguments}
+1439|        self.hooks.fire(HookPoint.TOOL_CALL_BEFORE, data=_hdata)
+1440|        handler, definition, preflight_error = self._tool_preflight_error(tc)
+1441|        if preflight_error:
+1442|            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": preflight_error})
+1443|            self._record_tool_metric("tool_calls", {"tool": tc.name, "outcome": "rejected"})
+1444|            return preflight_error
+1445|        allowed, snapshot = self._tool_circuits.allow_request(tc.name)
+1446|        if not allowed:
+1447|            error_msg = self._tool_circuit_error(tc.name, snapshot.state)
+1448|            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg, "circuit_state": snapshot.state})
+1449|            self._record_tool_metric("tool_circuit_rejections", {"tool": tc.name, "state": snapshot.state})
+1450|            return error_msg
+1451|        params = tc.arguments if isinstance(tc.arguments, dict) else {}
+1452|        for attempt in range(self.tool_max_retries + 1):
+1453|            started = time.monotonic()
+1454|            try:
+1455|                future = self._sync_tool_executor.submit(handler, params)
+1456|                try:
+1457|                    result = future.result(timeout=self.tool_timeout_seconds)
+1458|                except FutureTimeoutError:
+1459|                    cancelled = future.cancel()
+1460|                    raise _SyncToolTimeout(
+1461|                        f"\u9519\u8bef:\u5de5\u5177\u6267\u884c\u8d85\u65f6 [{tc.name}]: \u8d85\u8fc7 {self.tool_timeout_seconds:.1f} \u79d2"
+1462|                        f"(\u5df2\u53d6\u6d88\u6392\u961f\u4efb\u52a1={cancelled}\uff1b\u82e5\u5df2\u5f00\u59cb\u6267\u884c\uff0c\u5c06\u5728\u540e\u53f0\u81ea\u884c\u7ed3\u675f)"
+1463|                    )
+1464|                elapsed_ms = (time.monotonic() - started) * 1000
+1465|                # See async path: handlers that return an error string still
+1466|                # participate in transient retry and circuit accounting.
+1467|                if isinstance(result, str) and self._is_tool_error(result):
+1468|                    raise _ReturnedToolError(result)
+1469|                self._tool_circuits.record_success(tc.name)
+1470|                self.hooks.fire(HookPoint.TOOL_CALL_AFTER, data={**_hdata, "result": result, "attempt": attempt + 1})
+1471|                self._record_tool_metric("tool_calls", {"tool": tc.name, "outcome": "success"}, elapsed_ms)
+1472|                return result
+1473|            except _ReturnedToolError as exc:
+1474|                error_msg = str(exc)
+1475|            except _SyncToolTimeout as exc:
+1476|                error_msg = str(exc)
+1477|            except Exception as exc:
+1478|                error_msg = f"\u5de5\u5177\u6267\u884c\u5931\u8d25 [{tc.name}]:{type(exc).__name__}: {exc}"
+1479|            elapsed_ms = (time.monotonic() - started) * 1000
+1480|            retryable = self._tool_retry_allowed(tc.name, definition, error_msg)
+1481|            if retryable and attempt < self.tool_max_retries:
+1482|                self._record_tool_metric("tool_retries", {"tool": tc.name, "reason": "transient"}, elapsed_ms)
+1483|                time.sleep(self._tool_retry_delay(attempt, self.tool_retry_base_seconds))
+1484|                continue
+1485|            circuit_trackable = self._tool_circuit_tracking_allowed(tc.name, definition, error_msg)
+1486|            if circuit_trackable:
+1487|                snapshot = self._tool_circuits.record_transient_failure(tc.name)
+1488|                labels = {"tool": tc.name, "outcome": "transient_failure", "circuit_state": snapshot.state}
+1489|            else:
+1490|                self._tool_circuits.release_probe(tc.name)
+1491|                labels = {"tool": tc.name, "outcome": "failure"}
+1492|            self.hooks.fire(HookPoint.TOOL_ERROR, data={**_hdata, "error": error_msg, "attempt": attempt + 1})
+1493|            self._record_tool_metric("tool_calls", labels, elapsed_ms)
+1494|            return error_msg
+1495|        raise AssertionError("unreachable")
+1496|
