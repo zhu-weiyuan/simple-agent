@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 Integration tests for SimpleAgent API endpoints.
 
@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 # Set up auth for tests (*** is a valid key for test endpoints)
 # Force-set these before any module imports
 os.environ["OPENAI_API_KEY"] = os.environ.get("OPENAI_API_KEY", "test-key")
+os.environ["OPENAI_BASE_URL"] = os.environ.get("OPENAI_BASE_URL", "https://api.example.test")
 os.environ["API_KEYS"] = "***,test-key,integration-test"
 os.environ["DEV_AUTH_BYPASS"] = "0"  # app_prod honors .env; force auth on
 
