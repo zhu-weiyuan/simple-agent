@@ -1,185 +1,232 @@
-﻿# SimpleAgent
+# SimpleAgent
 
-一个从零实现的轻量级 AI Agent 框架，参考 Claude Code 和 OpenClaw 架构设计，用于深入理解 Agent 系统的核心原理。
+> **A production-ready Agent framework** — built from scratch, integrating best practices from strands-agents, A2A Protocol, LangGraph, and AgentScope.
 
-## ✨ 特性
+[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.136+-green.svg)](https://fastapi.tiangolo.com)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-- **端到端增强推理流水线**：Router → Retrieval → Persona → Generation → Detection → Citation → Output
-- **分层架构**：types → core (engine + hooks) → tools → memory → bridge → agent
-- **6 大增强模块**：
-  - 🔀 **查询路由** — 查询复杂度分类 + 动态策略路由
-  - 🧠 **Persona 记忆** — 六大认知域结构化记忆提取
-  - 🔗 **确定性引用** — 每个陈述可追溯到来源
-  - 🛡️ **实时幻觉检测** — 生成时即时事实校验
-  - 📚 **多索引混合检索** — Vector + Keyword + Graph 三模检索
-  - 💬 **流式输出** — 实时增量响应
-- **图状态编排引擎**（Graph）：节点有向图，支持状态传递、条件分支、循环
-- **Web UI**：暗色主题、意图分析面板、快捷操作、流式渲染、Markdown 支持
-- **Hook 系统**：pre/post 扩展点，支持自定义中间件
-- **Bridge 层**：权限控制 + 安全沙箱
-- **MCP 协议集成**：原生支持 Model Context Protocol
-- **请求延迟监控**：每个 API 响应自动附加 `X-Response-Time` 头部（毫秒级）
-- **Agent Card 健壮性**：优先使用 `agent.card()` 方法，回退到直接属性读取
-- **滑动窗口限流**：每个 API 端点自动限流，可配置请求数和窗口大小
-- **系统健康检查**：CPU/内存/磁盘使用率、LLM 连通性、请求统计
-- **A2A 协议**：Agent-to-Agent 互操作，支持 Agent Card 和任务状态
+---
 
-## 🏗️ 架构
+## 🎯 What is this?
 
+**SimpleAgent v2.1** is a lightweight yet production-grade AI Agent framework written in Python. It demonstrates how to build a **reliable, observable, and interoperable** agent system by combining:
+
+| Inspiration | What we adopted |
+|-------------|-----------------|
+| **strands-agents** | AgentBase Protocol, `AgentResult`, Agent-as-Tool |
+| **A2A Protocol** | Agent Card, Task state machine, HTTP/JSON interop |
+| **LangGraph** | Graph-based state management, SessionState |
+| **AgentScope Runtime** | Budget control, Circuit breaker, Audit logging |
+
+**Use cases**: Enterprise agent platforms, Multi-agent collaboration, Auditable LLM applications, Cost-controlled agent services.
+
+---
+
+## ✨ Key Capabilities
+
+### 🧠 Enhanced Reasoning Pipeline (7 Stages)
 ```
-┌─────────────────────────────────────────────────────┐
-│                    SimpleAgent                       │
-├──────────┬──────────┬──────────┬──────────┬─────────┤
-│  types   │  core    │  tools   │ memory   │ bridge  │
-│          │          │          │          │         │
-│ Message  │ Engine   │ Registry │ Store    │ Base    │
-│ Session  │ Hooks    │ Builtins │ Retrieval│ Perms   │
-│ Tool     │          │ Calculator│          │         │
-│          │          │ Time     │          │         │
-├──────────┴──────────┴──────────┴──────────┴─────────┤
-│              Enhanced Pipeline                       │
-├─────────────────────────────────────────────────────┤
-│  Router → Retrieval → Persona → Gen → Detect → Cit  │
-└─────────────────────────────────────────────────────┘
+Query Router → Multi-Index Retrieval → Persona Memory → 
+Core Generation → Hallucination Detection → Citation Verification → Output
+```
+- **4-tier Query Router** (arXiv:2604.14222) — Simple → Multi-Fact → Cross-Ref → Synthesis
+- **Hybrid Retrieval** — Vector + Keyword + Graph indexes with cross-validation
+- **Real-time Hallucination Detection** — 5 types: factual, temporal, causal, overconfidence, fabrication
+- **Deterministic Citations** — Every claim traceable to source with confidence scoring
+
+### 🏗️ Production-Grade Runtime
+| Component | Purpose |
+|-----------|---------|
+| **QueryEngine** | Async core loop with 4-layer guardrails (max tools, error circuit, progress detection, token budget) |
+| **Job Manager** | Background task lifecycle (submit, poll, cancel, timeout, artifact storage) |
+| **Artifact Store** | Large binary/blob persistence with deduplication |
+| **Session Events** | Immutable event log for replay & audit |
+| **Resilience Layer** | Circuit breaker, exponential backoff, error classification |
+
+### 🤝 Multi-Agent Orchestration
+```python
+# Agent-as-Tool (LLM decides when to call)
+main.add_tool(sub_agent.as_tool(name="reviewer"))
+
+# Supervisor (explicit routing)
+SupervisorAgent(roles=[researcher, coder, reviewer])
+
+# Chain / Parallel execution
+AgentChain([("research", r), ("write", w)])
+ParallelAgent([("summary", s), ("sentiment", s)])
 ```
 
-## 🚀 快速开始
+### 🔗 A2A Protocol (Full Implementation)
+- **Task-oriented HTTP API**: `POST /messages` → `GET /tasks/{id}` → `POST /tasks/{id}/cancel`
+- **SQLite persistence** with fingerprint-based idempotency
+- **True async support** (`arun` + cooperative cancellation)
+- **Remote agent registry** via `A2A_AGENTS_JSON`
 
-### 安装
+### 🛡️ Security & Governance
+- PII redaction (regex + entity detection)
+- Prompt injection guard (input/output scanning)
+- Permission policy: `ask` / `allow` / `deny`
+- System prompt confidentiality directive (anti-leakage)
 
+### 📊 Observability
+- Prometheus metrics (`/api/metrics`)
+- Health probes: `/healthz` (liveness) / `/api/ready` (readiness) / `/api/health` (detail)
+- Request tracing with correlation IDs
+- Token budget estimation → real usage reconciliation
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Python 3.10+
+- An OpenAI-compatible LLM endpoint (Ollama, LM Studio, vLLM, or cloud API)
+
+### Installation
 ```bash
-git clone https://github.com/zhu-weiyuan/simple-agent.git
+git clone https://github.com/your-org/simple-agent.git
 cd simple-agent
 pip install -e .
 ```
 
-### 配置
-
+### Configuration
 ```bash
 cp .env.example .env
-# 编辑 .env，填入你的 LLM API 配置
+# Edit .env with your LLM credentials:
+# OPENAI_API_KEY=xxx
+# OPENAI_BASE_URL=http://localhost:11434/v1   # Ollama example
+# OPENAI_MODEL=qwen2.5:7b
 ```
 
-### 运行
-
+### Run
 ```bash
-my-agent              # CLI 模式
-python app_prod.py         # Web 模式 (默认端口 8000)
+# CLI mode
+my-agent "列出当前目录文件"
+
+# Web mode (FastAPI + static UI)
+uvicorn app_prod:app --host 0.0.0.0 --port 8000
+# Then open http://localhost:8000 (chat) or http://localhost:8000/a2a.html (A2A console)
 ```
 
-## 📁 项目结构
+---
+
+## 🌐 API Reference
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/chat` | POST | Non-streaming: `{"message": "...", "session_id": "..."}` |
+| `/api/chat` | POST | Streaming (SSE): `{"message": "...", "stream": true}` |
+| `/api/health` | GET | Detailed health (system, LLM, DB, A2A) |
+| `/api/ready` | GET | Kubernetes readiness probe |
+| `/healthz` | GET | Kubernetes liveness probe |
+| `/api/metrics` | GET | Prometheus text format |
+| `/api/tools` | GET | List registered tools |
+| `/api/card` | GET | Agent Card (A2A metadata) |
+| `/api/conversations` | GET | Session management |
+| `/a2a/messages` | POST | **A2A: Submit task** |
+| `/a2a/tasks/{id}` | GET | **A2A: Query task status** |
+| `/a2a/tasks/{id}/cancel` | POST | **A2A: Cancel task** |
+
+---
+
+## 📁 Project Structure
 
 ```
 simple-agent/
-├── src/my_agent/
-│   ├── types/           # 类型定义（Message, Session, Tool, Agent）
-│   ├── core/            # 核心引擎 + Hook 系统
-│   ├── tools/           # 工具注册表 + 内置工具
-│   │   └── builtins/    # calculator, time, file, shell
-│   ├── memory/          # 记忆存储 + 检索
-│   ├── bridge/          # 桥接层 + 权限控制
-│   ├── enhanced/        # 增强模块（6个）
-│   ├── graph/           # 图状态编排引擎
-│   ├── llm/             # LLM 接口适配
-│   ├── agent.py         # Agent 主类
-│   ├── routing.py       # 路由逻辑
-│   └── mcp_client.py    # MCP 客户端
-├── web/                 # Web UI (暗色主题)
-├── examples/            # 示例应用
-│   └── code_review/     # AI 代码审查助手
-├── app_prod.py           # Web 服务器 (FastAPI)
-├── pyproject.toml
-└── README.md
+├── src/my_agent/           # Core framework
+│   ├── agent.py            # SimpleAgent main class
+│   ├── core/               # QueryEngine, Hooks, ContextAssembler
+│   ├── tools/              # ToolRegistry, Builtins, AgentAsTool
+│   ├── memory/             # MemoryStore, Retrieval, SQLite
+│   ├── enhanced/           # 7-stage pipeline modules
+│   ├── multiagent.py       # Supervisor, Chain, Parallel, AgentAsTool
+│   ├── a2a.py              # A2A Protocol (Server/Client/TaskStore)
+│   ├── a2a_hub.py          # FastAPI route registration
+│   ├── graph/              # Graph orchestration engine
+│   ├── bridge/             # Permission policy, LocalBridge
+│   ├── security/           # PII, Prompt Guard
+│   ├── llm/                # LLMClient, AsyncLLMClient, Gateway
+│   └── types/              # Message, Session, Tool, Agent types
+├── web/                    # Static UI (chat, dashboard, A2A console)
+├── app_prod.py             # Production FastAPI entrypoint
+├── examples/               # Demo applications
+│   └── code_review/        # AI code review assistant
+├── evals/                  # Evaluation harness & datasets
+├── tests/                  # Unit & integration tests
+└── docs/                   # Architecture & operations guides
 ```
 
-## 🌐 API 端点
+---
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/api/chat` | POST | `{"message": "...", "stream": false}` → 对话回复 |
-| `/api/chat` (stream) | POST | `{"message": "...", "stream": true}` → SSE 流式输出 |
-| `/api/health` | GET | 健康检查（含系统指标、LLM连接状态）|
-| `/api/metrics` | GET | Prometheus-style 文本指标 |
-| `/api/tools` | GET | 列出所有已注册工具 |
-| `/api/memory/stats` | GET | 记忆存储统计信息 |
-| `/api/card` | GET | Agent Card (A2A协议兼容的元数据) |
-| `/api/conversations` | GET | 列出最近的对话会话（session管理）|
-| `/api/conversations/{id}` | DELETE | 删除指定会话 |
-| `/api/analytics` | GET | 对话分析统计（会话数、消息量、平均长度）|
-| `/api/intent` | POST | `{"message": "..."}` → 意图分类 + 置信度 + 建议回复 |
-
-## 🧪 测试
+## 🧪 Testing & Evaluation
 
 ```bash
-python test_pipeline.py     # 流水线集成测试
-python test_enhanced.py     # 增强模块测试
-python test_graph_engine.py # 图引擎测试
+# Unit tests
+pytest tests/
+
+# Integration tests (requires running LLM)
+pytest tests/test_integration.py
+
+# Evaluation harness (offline + live)
+python evals/run_eval.py
+python evals/run_live_eval.py
 ```
 
-## 📖 设计参考
+**Evaluation suites**: Tool calling, Structured output, Skill routing, Safety, Performance, Production reliability (50-case stress test).
 
-- **Claude Code** — 迭代式主循环、Hook 系统、Feature Gating、权限三防线
-- **OpenClaw** — 子代理系统、Cron 调度、心跳检查
-- **LangGraph** — 图状态编排灵感
-- **AgentScope** — MCP 集成模式
+---
 
-## 📝 License
+## 📖 Documentation
 
-MIT
+| Guide | Audience |
+|-------|----------|
+| [Learning Guide](docs/LEARNING_GUIDE.md) | Developers learning agent architecture |
+| [Evaluation Guide](docs/EVALUATION_GUIDE.md) | QA / Researchers running benchmarks |
+| [Operations Guide](docs/operations/README.md) | SREs deploying to production |
+| [Source Code Map](src/my_agent/README.md) | Contributors navigating codebase |
+| [Architecture Docs](docs/architecture/) | Architects reviewing design decisions |
 
-## ?? ?????????
+---
 
-???????????/??????????????????????????????????????
+## 🗣️ Interview Talking Points
 
-- [??????](docs/LEARNING_GUIDE.md)
-- [???????](docs/EVALUATION_GUIDE.md)
-- [?????](docs/README.md)
-- [??????](src/my_agent/README.md)
-- [??????](tests/README.md)
-- [??????](docs/operations/README.md)
+> **Architecture**: "分层解耦——types 定义契约，core 跑循环，tools/memory/bridge 可插拔，enhanced pipeline 按需叠加。"
+>
+> **Reliability**: "QueryEngine 四层护栏防止无限循环/成本失控/幻觉累积；Resilience 统一错误分类+熔断+重试。"
+>
+> **Interop**: "完整落地 A2A 协议——任务状态机、指纹幂等、SQLite 断点恢复、真 async 取消。"
+>
+> **Multi-Agent**: "Agent-as-Tool 让 LLM 自主决策委托；Supervisor/Chain/Parallel 覆盖三大编排范式。"
+>
+> **Cost Control**: "Token 预算 estimate→reconcile 两阶段，BudgetPolicy 支持 warn/degrade/reject。"
 
-### ???????
+---
 
-- ?????`app_prod.py`???????? `/api/health` ??????
-- ?? shim?`app.prod.py`?
-- ?????`app.py`??????????????????????????
-- ???????`src/my_agent/tools/builtins/file.py`???????????? `/api/tools` ???
-
-## 📚 源码学习与目录导航
-
-项目文件按“源码、测试/评测、运行脚本、部署文档、运行数据”理解，不建议把数据库和日志当作源码阅读。
-
-- 源码学习路线：docs/LEARNING_GUIDE.md
-- 测试与评测导航：docs/EVALUATION_GUIDE.md
-- 文档总目录：docs/README.md
-- 源码目录说明：src/my_agent/README.md
-- 测试目录说明：tests/README.md
-- 生产运维入口：docs/operations/README.md
-
-### 当前入口和版本
-
-- 生产服务：app_prod.py，当前生产版本以 /api/health 返回值为准。
-- 兼容 shim：app.prod.py。
-- 旧版入口：app.py，保留用于历史回归；若浏览器版本不对，先确认端口进程。
-- 内置文件工具：src/my_agent/tools/builtins/file.py，由生产入口注册后可通过 /api/tools 查看。
-
-## Production start (P6)
-
-规范入口为 `app_prod.py`(`app.prod.py` 为兼容 shim):
+## 🛠️ Development
 
 ```bash
-# 单 worker(默认)
-uvicorn app_prod:app --host 0.0.0.0 --port 8000
+# Format & lint
+ruff check --fix && ruff format
 
-# 多 worker(内存限流/会话为进程内状态,多 worker 时需外部
-# session 亲和或共享存储,见遗留风险)
-WORKERS=2 python app_prod.py
+# Type check
+mypy src/
+
+# Pre-commit (configured)
+pre-commit install
 ```
 
-关键环境变量:`OPENAI_API_KEY`、`OPENAI_BASE_URL`(**须含 /v1**)、
-`OPENAI_MODEL`、`REQUEST_TIMEOUT_SECONDS`(默认 60)、`WORKERS`(默认 1)、
-`MAX_SESSIONS`(LRU 上限,默认 500)、`CONVERSATIONS_DB`、
-`RATE_LIMIT_REQUESTS`/`RATE_LIMIT_WINDOW`、`API_KEYS`、`SHUTDOWN_TIMEOUT_SECONDS`。
+---
 
-探针:`/healthz`(liveness)、`/api/ready`(readiness)、`/api/health`(详情)、
-`/api/metrics`(Prometheus)。
+## 📄 License
+
+MIT License — see [LICENSE](LICENSE) for details.
+
+---
+
+## 🙏 Acknowledgments
+
+- [strands-agents](https://github.com/strands-agents) — AgentBase protocol design
+- [A2A Protocol](https://github.com/google/A2A) — Agent interoperability standard
+- [LangGraph](https://github.com/langchain-ai/langgraph) — Graph state management patterns
+- [AgentScope](https://github.com/modelscope/agentscope) — Production runtime patterns
