@@ -777,7 +777,13 @@ class QueryEngine:
         target = int(self.context_window * 0.6)
         if estimate_tokens_of_session(session) > target and session.should_compact():
             self.hooks.fire(HookPoint.SESSION_COMPACT)
-            session.compact()
+            # 优先使用 DSH-style 压缩引擎
+            if hasattr(self, '_compaction_engine') and self._compaction_engine:
+                result = self._compaction_engine.maybe_compact(session)
+                if result:
+                    self._debug(f"DSH compaction: {result.shadowed_token_count} -> {result.checkpoint_token_count} tokens")
+            else:
+                session.compact()
         fitted = fit_messages_to_budget(
             session.messages, context_window=self.context_window, target_ratio=0.6)
         openai_msgs = [m.to_openai() for m in fitted]
@@ -795,6 +801,19 @@ class QueryEngine:
         - summary_boundary(role=system) 保留在原位, 不被当成对话内容。
         """
         return self._assemble_messages(session or self.session)
+
+    def compact_session(self, session: Optional[SessionState] = None) -> Optional[Any]:
+        """手动触发会话压缩（DSH-style 结构化摘要 + KV cache 复用）。
+        
+        返回压缩结果，包含 compaction_id, shadowed_token_count, checkpoint_token_count 等信息。
+        如果未触发压缩（如 token 未达阈值），返回 None。
+        """
+        sess = session or self.session
+        if hasattr(self, '_compaction_engine') and self._compaction_engine:
+            return self._compaction_engine.force_compact(sess)
+        # 回退到原有逻辑
+        sess.compact()
+        return None
 
     # ── sync public API (兼容) ────────────────────────────────
 

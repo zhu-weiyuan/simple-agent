@@ -85,6 +85,7 @@ from .memory.store import MemoryStore
 from .memory.retrieval import MemoryRetriever
 from .bridge.base import LocalBridge
 from .a2a import A2AClient, A2AServer, TaskState as A2ATaskState, A2AMessage
+from .compaction import CompactionEngine, CompactionConfig
 
 # ── 可选依赖 ────────────────────────────────────────────────
 
@@ -270,6 +271,18 @@ class SimpleAgent:
             file_observations=self.file_observations,
         )
 
+
+        # Context Compaction (DSH-style)
+        compaction_config = CompactionConfig(
+            threshold_ratio=0.8,
+            retain_ratio=0.16,
+            summarization_provider=os.getenv("COMPACTION_PROVIDER", ""),
+            summarization_model=os.getenv("COMPACTION_MODEL", ""),
+            max_tokens=8192,
+            auto=True,
+        )
+        self._compaction_engine = CompactionEngine(self.engine, compaction_config)
+        self.engine._compaction_engine = self._compaction_engine
 
 
         # ── 调试 ─────────────────────────────────────────────
@@ -893,6 +906,18 @@ class SimpleAgent:
                 client.stop()
             except Exception as exc:  # noqa: BLE001 - closing one peer must not leak others
                 self._debug(f"停止 MCP 客户端失败: {exc}")
+
+    def compact_session(self, session: Optional[SessionState] = None) -> Optional[Any]:
+        """手动触发当前会话的上下文压缩（DSH-style 结构化摘要）。
+        
+        返回压缩结果，包含 compaction_id, shadowed_token_count, checkpoint_token_count 等。
+        如果未触发压缩（token 未达阈值），返回 None。
+        
+        Args:
+            session: 可选，指定要压缩的会话。默认使用当前 agent 会话。
+        """
+        sess = session or self.engine.session
+        return self.engine.compact_session(sess)
 
     def __enter__(self) -> "SimpleAgent":
         return self
