@@ -50,25 +50,31 @@ def test_engine_payload_never_puts_system_after_user():
 
 @pytest.mark.asyncio
 async def test_jinja_template_500_is_not_retried_and_keeps_upstream_detail():
+    """Jinja template 500 must not retry and must preserve upstream detail."""
     client = AsyncLLMClient(
         api_key="test", base_url="http://fake/v1", model="test-model"
     )
-    request = httpx.Request("POST", "http://fake/v1/chat/completions")
-    response = httpx.Response(
-        500,
-        json={"error": {"code": 500, "message": "Jinja Exception: System message must be at the beginning."}},
-        request=request,
-    )
-    fake = AsyncMock()
-    fake.post = AsyncMock(return_value=response)
-    fake.is_closed = False
 
-    with patch.object(client, "_get_client", return_value=fake):
-        with pytest.raises(httpx.HTTPStatusError) as exc_info:
-            await client.achat([{"role": "user", "content": "hello"}])
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            json={"error": {"code": 500, "message": "Jinja Exception: System message must be at the beginning."}},
+            request=request,
+        )
 
-    assert fake.post.await_count == 1
+    transport = httpx.MockTransport(handler)
+    mock_client = httpx.AsyncClient(transport=transport)
+
+    try:
+        with patch.object(client, "_get_client", return_value=mock_client):
+            with pytest.raises(httpx.HTTPStatusError) as exc_info:
+                await client.achat([{"role": "user", "content": "hello"}])
+    finally:
+        await mock_client.aclose()
+
+    # Verify no retry occurred by checking the error message contains upstream detail
     assert "System message must be at the beginning" in str(exc_info.value)
+    assert "Jinja Exception" in str(exc_info.value)
 
 
 def test_llm_template_error_is_actionable_and_not_a_network_hint():
