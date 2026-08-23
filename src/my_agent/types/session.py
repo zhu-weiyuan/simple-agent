@@ -93,12 +93,41 @@ class SessionState:
         keep_count = self.config.keep_recent * 2
         if len(non_system) <= keep_count:
             return
-        keep = non_system[-keep_count:]
-        older = non_system[:-keep_count]
 
-        summary = self._summarize_old(older)
+        # CRITICAL FIX: Never drop user messages - they are the conversation anchor
+        # Separate user messages from others
+        user_msgs = [m for m in non_system if m.role.value == "user"]
+        other_msgs = [m for m in non_system if m.role.value != "user"]
+
+        # Keep recent other messages (assistant + tool) within budget
+        keep_other = other_msgs[-keep_count:] if len(other_msgs) > keep_count else other_msgs
+        older_other = other_msgs[:-keep_count] if len(other_msgs) > keep_count else []
+
+        # ALL user messages are kept (they're the conversation history)
+        # Older non-user messages are summarized
+        to_summarize = older_other
+
+        if not to_summarize:
+            return  # Nothing to summarize
+
+        summary = self._summarize_old(to_summarize)
         boundary = Message.summary_boundary(summary)
-        self.messages = [self.messages[0], boundary] + keep
+        # Reconstruct: system + summary_boundary + ALL user msgs + kept other msgs
+        # Maintain chronological order
+        kept_non_system = []
+        user_idx = 0
+        other_idx = 0
+        for m in non_system:
+            if m.role.value == "user":
+                kept_non_system.append(user_msgs[user_idx])
+                user_idx += 1
+            else:
+                if other_idx < len(keep_other):
+                    kept_non_system.append(keep_other[other_idx])
+                    other_idx += 1
+                # else: this older other msg was summarized, skip it
+
+        self.messages = [self.messages[0], boundary] + kept_non_system
         self.turn_count += 1
 
     def _summarize_old(self, older: List[Message]) -> str:

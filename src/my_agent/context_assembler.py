@@ -85,7 +85,7 @@ class TokenBudgetManager:
 
 
 class ContextAssembler:
-    def __init__(self, max_tokens: int = 4096, context_window: int | None = None):
+    def __init__(self, max_tokens: int = 131072, context_window: int | None = None):
         # Accept both 'max_tokens' and 'context_window' for backward compatibility
         if context_window is not None:
             self.max_tokens = context_window

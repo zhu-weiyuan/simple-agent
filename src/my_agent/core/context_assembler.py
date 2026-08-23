@@ -20,6 +20,97 @@ from ..types.message import Message, Role
 logger = logging.getLogger(__name__)
 
 
+def normalize_messages_for_chat_template(messages: List["Message"]) -> List["Message"]:
+    """Normalize persisted history for strict local chat templates.
+
+    Local llama.cpp-compatible Jinja templates commonly require one leading
+    system message and valid assistant-tool-result groups.  A crashed or old
+    session can contain duplicate system messages, empty assistant messages,
+    orphan tool results, or an incomplete tool call; those histories often
+    surface as an opaque HTTP 500 from the model server.  This function works
+    on a copy and never mutates the live session.
+    """
+    if not messages:
+        return []
+
+    def clone(message: "Message", content: Optional[str] = None) -> "Message":
+        return Message(
+            role=message.role,
+            content=message.content if content is None else content,
+            tool_calls=list(message.tool_calls),
+            tool_call_id=message.tool_call_id,
+            metadata=dict(message.metadata or {}),
+        )
+
+    source = list(messages)
+    systems = [m for m in source if m.role.value == "system"]
+    leading: List["Message"] = []
+    if systems:
+        canonical = clone(systems[0])
+        summaries = []
+        for message in systems[1:]:
+            metadata = getattr(message, "metadata", {}) or {}
+            if metadata.get("summary_boundary") or (message.content or "").startswith("[HISTORY SUMMARY]"):
+                if message.content and message.content != canonical.content:
+                    summaries.append(message.content)
+        if summaries:
+            canonical.content = (canonical.content or "") + "\n\n" + "\n\n".join(summaries)
+        leading = [canonical]
+
+    cleaned: List["Message"] = []
+    pending_index: Optional[int] = None
+    pending_ids: set[str] = set()
+
+    def drop_pending() -> None:
+        nonlocal pending_index, pending_ids
+        if pending_index is not None and pending_index < len(cleaned):
+            cleaned.pop(pending_index)
+        pending_index = None
+        pending_ids = set()
+
+    for message in source:
+        role = message.role.value
+        content = message.content or ""
+        if role == "system":
+            continue
+        if role == "user":
+            if pending_ids:
+                drop_pending()
+            if not content.strip():
+                continue
+            if cleaned and cleaned[-1].role.value == "user":
+                cleaned[-1] = clone(message)
+            else:
+                cleaned.append(clone(message))
+            continue
+        if role == "assistant":
+            if pending_ids:
+                drop_pending()
+            if not content.strip() and not message.tool_calls:
+                continue
+            if cleaned and cleaned[-1].role.value == "assistant":
+                cleaned[-1] = clone(message)
+            else:
+                cleaned.append(clone(message))
+            if message.tool_calls:
+                pending_index = len(cleaned) - 1
+                pending_ids = {tc.id for tc in message.tool_calls if tc.id}
+            continue
+        if role == "tool":
+            if pending_index is None or message.tool_call_id not in pending_ids:
+                continue
+            cleaned.append(clone(message))
+            pending_ids.remove(message.tool_call_id)
+            if not pending_ids:
+                pending_index = None
+            continue
+        logger.warning("Dropping unsupported message role from chat history: %s", role)
+
+    if pending_ids:
+        drop_pending()
+    return leading + cleaned
+
+
 # ── Token Estimation (统一估算器) ────────────────────────────
 #
 # 统一规则 (原 token_budget.TokenEstimator 并入此处):
@@ -690,8 +781,8 @@ def _message_tokens(msg: "Message") -> int:
 
 def fit_messages_to_budget(
     messages: List["Message"],
-    context_window: int = 32768,
-    target_ratio: float = 0.6,
+    context_window: int = 131072,
+    target_ratio: float = 0.7,
 ) -> List["Message"]:
     """把会话消息裁剪到 context_window * target_ratio 以内。
 
@@ -711,6 +802,12 @@ def fit_messages_to_budget(
     system_msgs = [m for m in messages if m.role.value == "system"]
     history = [m for m in messages if m.role.value != "system"]
 
+    # DEBUG: Log system messages
+    logger.debug("fit_messages_to_budget: system_msgs count=%d, history count=%d", len(system_msgs), len(history))
+    for i, m in enumerate(system_msgs):
+        meta = getattr(m, "metadata", {}) or {}
+        logger.debug("  system[%d]: summary_boundary=%s, content_len=%d", i, meta.get("summary_boundary"), len(m.content or ""))
+
     # Keep the canonical prompt, but do not let a large compaction summary take
     # the whole budget before the current turn is considered.  SessionState puts
     # the canonical prompt first and marks summaries explicitly.
@@ -722,15 +819,28 @@ def fit_messages_to_budget(
         else:
             auxiliary_system.append(message)
 
+    if not primary_system and auxiliary_system:
+        # 首条 system 就是摘要边界(无规范 system): 提升第一条为规范位
+        primary_system = [auxiliary_system.pop(0)]
+        logger.debug("Promoted first auxiliary system to primary")
+
     used = sum(_message_tokens(m) for m in primary_system)
-    kept_system = list(primary_system)
+    # Chat template (Qwen3 系) 只允许整个 payload 中 index 0 存在唯一一条
+    # system 消息; 摘要边界等辅助 system 内容必须并入规范 system,
+    # 否则上游抛 "System message must be at the beginning" (HTTP 500)。
+    merged_aux: List[str] = []
     for message in auxiliary_system:
         msg_tokens = _message_tokens(message)
         if used + msg_tokens <= budget:
-            kept_system.append(message)
+            merged_aux.append(message.content or "")
             used += msg_tokens
         else:
             logger.info("Dropping auxiliary system context to honor message budget")
+    if merged_aux:
+        merged = (primary_system[0].content if primary_system else "") or ""
+        primary_system[0] = Message.system(merged + "\n\n" + "\n\n".join(merged_aux))
+        used = _message_tokens(primary_system[0])
+    kept_system = list(primary_system)
 
     # 把历史按 "组" 切分: assistant(tool_calls) + 其 tool 结果 是一组
     groups: List[List["Message"]] = []

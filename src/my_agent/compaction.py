@@ -117,13 +117,23 @@ class TokenEstimator:
 
     @staticmethod
     def estimate_message(message: Message) -> int:
-        """估算单条消息的 token 数"""
+        """Conservative estimate aligned with the DSH request guard."""
         content = message.content or ""
-        # 简单估算：中文 ~1.3 chars/token, 英文 ~4 chars/token
-        has_cjk = any("\u4e00" <= c <= "\uffff" for c in content)
-        chars = len(content)
-        return int(chars * (0.75 if has_cjk else 0.25))
+        if not content:
+            return 1
+        cjk = sum(
+            1 for ch in content
+            if ("\u3400" <= ch <= "\u9fff"
+                or "\uf900" <= ch <= "\ufaff"
+                or "\u3000" <= ch <= "\u303f"
+                or "\u3040" <= ch <= "\u30ff"
+                or "\uac00" <= ch <= "\ud7af")
+        )
+        non_cjk = len(content) - cjk
+        # Local tokenizers vary; a CJK character is conservatively one token.
+        return max(1, int(cjk + (non_cjk / 3.0) + 0.999))
 
+    @staticmethod
     @staticmethod
     def estimate_messages(messages: List[Message]) -> int:
         return sum(TokenEstimator.estimate_message(m) for m in messages)
@@ -155,13 +165,25 @@ class CompactionEngine:
 
     # ── 公共接口 ──────────────────────────────────────────
 
-    def maybe_compact(self, session: SessionState) -> Optional[CompactionResult]:
-        """检查是否需要压缩，需要则执行"""
+    def maybe_compact(
+        self,
+        session: SessionState,
+        *,
+        threshold_ratio: Optional[float] = None,
+    ) -> Optional[CompactionResult]:
+        """检查是否需要压缩，需要则执行。
+
+        ``threshold_ratio`` lets the DSH request path compact earlier than the
+        hard context limit while preserving the default behaviour of callers
+        that use this engine directly.
+        """
         if not self.config.auto:
             return None
 
         pressure = self._measure_pressure(session)
-        if pressure.ratio < self.config.threshold_ratio:
+        threshold = self.config.threshold_ratio if threshold_ratio is None else float(threshold_ratio)
+        threshold = min(0.95, max(0.05, threshold))
+        if pressure.ratio < threshold:
             return None
 
         # 选择待压缩范围
@@ -186,7 +208,7 @@ class CompactionEngine:
         """测量会话压力"""
         total_tokens = self.token_estimator.estimate_messages(session.messages)
         # 估算 context window（从 engine 配置获取）
-        context_window = getattr(self.engine, 'context_window', 32768)
+        context_window = getattr(self.engine, 'context_window', 131072)
         return PressureMeasurement(
             total_tokens=total_tokens,
             context_window=context_window,
@@ -228,19 +250,46 @@ class CompactionEngine:
         if keep_from_idx == 0:
             return None  # 全部都要保留
 
-        # 调整到 tool-pairing balanced boundary
-        # 简化：向前找到最近的 assistant message 边界
-        while keep_from_idx > 0:
-            _, msg = non_system[keep_from_idx - 1]
-            if msg.role == Role.ASSISTANT and not msg.tool_calls:
-                # 这是一个不含 tool_calls 的 assistant 消息，安全切分
+        # 调整到 tool-pairing balanced boundary。
+        # ``keep_from_idx`` 指向保留尾部的第一条消息，绝不能从一条
+        # tool result 开始；否则既会生成不合法的 chat-template 消息序列，
+        # 也会把它和前面的 assistant tool_call 拆开。历史数据有可能
+        # 已经包含孤立 tool result（例如旧版本异常中断），这类消息不能
+        # 让边界选择陷入循环：直接把孤立 result 收进摘要，继续寻找安全
+        # 的起点即可。
+        while keep_from_idx < len(non_system):
+            _, msg = non_system[keep_from_idx]
+            if msg.role != Role.TOOL:
                 break
-            if msg.role == Role.TOOL:
-                # tool message，需要找到对应的 assistant
-                continue
-            keep_from_idx -= 1
 
-        if keep_from_idx == 0:
+            tool_call_id = str(getattr(msg, "tool_call_id", "") or "")
+            owner_idx: Optional[int] = None
+            for candidate_idx in range(keep_from_idx - 1, -1, -1):
+                _, candidate = non_system[candidate_idx]
+                if candidate.role == Role.USER:
+                    # tool calls never legally cross a new user turn.
+                    break
+                if candidate.role != Role.ASSISTANT:
+                    continue
+                for call in candidate.tool_calls or []:
+                    call_id = str(getattr(call, "id", "") or "")
+                    if call_id and call_id == tool_call_id:
+                        owner_idx = candidate_idx
+                        break
+                if owner_idx is not None:
+                    break
+
+            if owner_idx is not None:
+                # Keep the requesting assistant message together with all of
+                # its following tool results.
+                keep_from_idx = owner_idx
+                break
+
+            # Malformed/orphan tool result: compact it instead of retaining an
+            # invalid leading tool message.  This must advance the index.
+            keep_from_idx += 1
+
+        if keep_from_idx <= 0 or keep_from_idx >= len(non_system):
             return None
 
         # 转换为 messages 中的索引
@@ -337,18 +386,92 @@ class CompactionEngine:
         return self._fallback_summary(region_messages)
 
     def _fallback_summary(self, region_messages: List[Dict[str, Any]]) -> str:
-        """LLM 不可用时的回退摘要"""
-        parts = [
-            f"## Primary Request and Intent\n- (auto-summary: {len(region_messages)} messages)",
-            "## Key Technical Concepts\n- (auto-summary)",
-            "## Files and Code\n- (auto-summary)",
-            "## Errors and Fixes\n- (auto-summary)",
-            "## Pending Jobs\n- (auto-summary)",
-            "## Current Work\n- (auto-summary)",
-            "## Next Step\n- (auto-summary)",
-            "## Critical Context\n- (auto-summary)",
-        ]
-        return "\n".join(parts)
+        """Deterministic, bounded fallback when a summarization LLM is unavailable.
+
+        A previous fallback only wrote ``(auto-summary)`` placeholders.  That
+        technically reduced tokens but discarded the investigation state needed
+        to resume a long tool-driven task.  Preserve compact excerpts and tool
+        identities instead; this is deterministic, local, and cannot create an
+        additional oversized LLM request during an already pressured turn.
+        """
+        def clip(value: Any, limit: int) -> str:
+            text = str(value or "").replace("\x00", "").strip()
+            if len(text) > limit:
+                return text[:limit] + " …[已裁剪]"
+            return text or "(empty)"
+
+        requests: List[str] = []
+        files_and_tools: List[str] = []
+        findings: List[str] = []
+        for message in region_messages[-24:]:
+            role = str(message.get("role") or "")
+            content = clip(message.get("content"), 700 if role == "tool" else 420)
+            if role == "user":
+                requests.append(f"- {content}")
+            elif role == "tool":
+                tool_id = clip(message.get("tool_call_id"), 80)
+                files_and_tools.append(f"- tool_result {tool_id}: {content}")
+            elif role == "assistant":
+                calls = message.get("tool_calls") or []
+                names = []
+                for call in calls:
+                    function = call.get("function", {}) if isinstance(call, dict) else {}
+                    name = function.get("name") if isinstance(function, dict) else None
+                    if name:
+                        names.append(str(name))
+                if names:
+                    files_and_tools.append(f"- tool_call: {', '.join(names[:8])}")
+                elif content != "(empty)":
+                    findings.append(f"- {content}")
+
+        return "\n".join([
+            "## Primary Request and Intent",
+            *(requests[-6:] or [f"- auto-summary of {len(region_messages)} messages"]),
+            "## Key Technical Concepts",
+            "- Deterministic local fallback; retain recent task and tool facts.",
+            "## Files and Code",
+            *(files_and_tools[-12:] or ["- (no tool details retained)"]),
+            "## Errors and Fixes",
+            *(findings[-5:] or ["- (none)"]),
+            "## Pending Jobs",
+            "- Continue the most recent user request using the retained tool state.",
+            "## Current Work",
+            "- Historical context was compacted before the next model request.",
+            "## Next Step",
+            "- Inspect the latest user request and continue from the newest tool result.",
+            "## Critical Context",
+            "- Older verbose tool output was clipped, not treated as a final answer.",
+        ])
+
+    def _checkpoint_budget(self, measurement: "PressureMeasurement") -> int:
+        """Bound a checkpoint so it can coexist with the live task tail.
+
+        ``max_tokens`` is an upper ceiling, not a reason to create an 8k
+        checkpoint in a 4k test/development context.  Reserve most of the
+        input budget for the newest user turn and valid tool-call group.
+        """
+        window_share = max(128, int(max(1, measurement.context_window) * 0.16))
+        return max(128, min(int(self.config.max_tokens), window_share))
+
+    def _fit_summary_to_budget(self, summary: str, token_budget: int) -> str:
+        """Trim a deterministic or model summary without breaking the checkpoint."""
+        if self.token_estimator.estimate_message(Message.user(summary)) <= token_budget:
+            return summary
+        suffix = "\n- [Earlier checkpoint details clipped to preserve the active task.]"
+        low, high, best = 0, len(summary), "## Primary Request and Intent" + suffix
+        while low <= high:
+            middle = (low + high) // 2
+            candidate = summary[:middle].rstrip()
+            if "\n" in candidate:
+                candidate = candidate.rsplit("\n", 1)[0].rstrip()
+            candidate = (candidate or "## Primary Request and Intent") + suffix
+            if self.token_estimator.estimate_message(Message.user(candidate)) <= token_budget:
+                best = candidate
+                low = middle + 1
+            else:
+                high = middle - 1
+        return best
+
 
     def _frame_summary(self, summary: str) -> str:
         """包装摘要为 checkpoint 格式"""
@@ -368,6 +491,7 @@ class CompactionEngine:
 
         # 2. 生成摘要
         summary = self._summarize_with_llm(system_prompt, tools, region_messages)
+        summary = self._fit_summary_to_budget(summary, self._checkpoint_budget(measurement))
 
         # 3. 包装为 checkpoint 格式
         checkpoint_content = self._frame_summary(summary)
@@ -377,7 +501,9 @@ class CompactionEngine:
         checkpoint_msg = Message.user(checkpoint_content)
 
         # 5. 替换消息：移除 range，插入 checkpoint
-        new_messages = session.messages[:range_.start_idx] + [checkpoint_msg] + session.messages[range_.end_idx + 1:]
+        # 关键修复：确保 start_idx >= 1，永远保留索引 0 的系统消息
+        safe_start_idx = max(1, range_.start_idx)
+        new_messages = session.messages[:safe_start_idx] + [checkpoint_msg] + session.messages[range_.end_idx + 1:]
         session.messages = new_messages
 
         # 6. 计算 checkpoint token 数

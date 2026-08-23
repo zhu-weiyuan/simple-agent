@@ -58,6 +58,7 @@ from .types.agent import (
     StopReason,
 )
 from .core.engine import QueryEngine
+from .dsh_state_machine import AgentLoop, AgentLoopBuilder, PhaseKind, Session as DSHSession
 from .artifact_store import ArtifactStore
 from .file_observation import FileObservationStore
 from .session_events import SessionEventLog
@@ -284,6 +285,15 @@ class SimpleAgent:
         self._compaction_engine = CompactionEngine(self.engine, compaction_config)
         self.engine._compaction_engine = self._compaction_engine
 
+        # ── DSH 风格状态机 (SimpleAgentLoop 集成) ──────────────────────
+        from .loop import create_simple_agent_loop
+        self._dsh_loop = create_simple_agent_loop(
+            engine=self.engine,
+            system_prompt=prompt,
+            session_state=self.engine.session,
+            max_tool_calls=200,
+            checkpoint_path=str(self.project_root / "checkpoints"),
+        )
 
         # ── 调试 ─────────────────────────────────────────────
         # 初始化 MCP 之前先设置，确保配置错误也能安全地写入调试信息。
@@ -350,17 +360,37 @@ class SimpleAgent:
     # ── LLM 注入 ─────────────────────────────────────────────
 
     def _inject_llm(self) -> None:
-        """注入 LLM 调用函数到 QueryEngine（使用 requests 客户端）"""
+        """注入 LLM 调用函数到 QueryEngine 和 SimpleAgentLoop"""
 
         def call_fn(
             messages: List[Dict[str, Any]],
             schemas: List[Dict[str, Any]],
+            max_tokens: Optional[int] = None,
         ) -> Any:
-            # 返回一个兼容 OpenAI SDK 的模拟对象
-            resp_json = self.llm.chat(messages, tools=schemas, tool_choice="auto")
+            # 返回一个兼容 OpenAI SDK 的模拟对象。DSH 会根据最终拟合后的
+            # prompt 动态传入 max_tokens，避免 provider 预留固定输出预算。
+            kwargs: Dict[str, Any] = {"tools": schemas, "tool_choice": "auto"}
+            if max_tokens is not None:
+                kwargs["max_tokens"] = max_tokens
+            resp_json = self.llm.chat(messages, **kwargs)
             return _FakeResponse(resp_json)
 
+        async def stream_fn(
+            messages: List[Dict[str, Any]],
+            schemas: List[Dict[str, Any]],
+            max_tokens: Optional[int] = None,
+        ) -> AsyncIterator[Dict[str, Any]]:
+            kwargs: Dict[str, Any] = {"tools": schemas, "tool_choice": "auto"}
+            if max_tokens is not None:
+                kwargs["max_tokens"] = max_tokens
+            async for chunk in self.llm.astream(messages, **kwargs):
+                yield chunk
+
         self.engine.set_llm(call_fn)
+
+        # 同时注入到 SimpleAgentLoop (支持同步和流式)
+        self._dsh_loop.set_llm_functions(call_fn=call_fn, stream_fn=stream_fn)
+
         self._debug(f"LLM 客户端已初始化: base_url={self.llm.base_url}, model={self.llm.model}")
 
     # ── MCP ──────────────────────────────────────────────────
@@ -710,16 +740,27 @@ class SimpleAgent:
         """
         处理用户输入，返回回复。
 
-        流程:
+        流程 (DSH 风格状态机 via SimpleAgentLoop):
         1. 基础记忆召回
-        2. 增强流水线（路由 → 检索 → Persona → 生成 → 检测 → 引用）
-        3. 记忆自动沉淀
+        2. 通过 SimpleAgentLoop 执行 (turn/step 驱动，inbox 可续行)
+        3. 增强后处理（幻觉检测 + 引用验证）
+        4. 记忆自动沉淀
         """
         # 基础记忆召回
         remembered = self.memory_store.remember_from_user_text(user_input)
 
-        # 增强流水线
-        result, context = self._run_enhanced_pipeline(user_input)
+        # 构建增强上下文
+        extra_context = self._build_enhanced_context(user_input)
+
+        # 通过 SimpleAgentLoop 执行 (支持 inbox 续行机制)
+        self._dsh_loop._dsh_loop._system_prompt_base = self._compose_system_prompt(
+            self.engine.system_prompt_base, extra_context
+        )
+        loop_result = self._dsh_loop.run(user_input)
+        result = loop_result.content
+
+        # 增强后处理
+        result = self._post_process(result, user_input)
 
         # 记忆自动沉淀
         auto_captured = self.memory_store.auto_capture_lesson(user_input, result)
@@ -730,17 +771,11 @@ class SimpleAgent:
             self._debug("已自动沉淀一条 lesson")
 
         # 调试日志
-        self._debug("增强流水线执行完成:")
-        self._debug(f"  查询层级: {context['query_tier']}")
-        self._debug(f"  路由策略: {context['routing_strategy']}")
-        self._debug(
-            f"  幻觉检测: {context['is_hallucination']} "
-            f"({context['hallucination_type']})"
-        )
-        self._debug(
-            f"  引用验证: {context['has_citations']} "
-            f"({context['citations_count']}条)"
-        )
+        self._debug("SimpleAgentLoop 执行完成:")
+        self._debug(f"  Turn 数: {loop_result.iterations}")
+        self._debug(f"  Stop reason: {loop_result.stop_reason}")
+        if loop_result.stop_detail:
+            self._debug(f"  Stop detail: {loop_result.stop_detail}")
 
         # 持久化增强状态
         if self.enable_enhanced:
@@ -751,9 +786,56 @@ class SimpleAgent:
 
         return result + memory_note
 
-    def run_stream(self, user_input: str) -> Generator[str, None, None]:
-        """流式处理用户输入"""
-        return self.engine.run_stream(user_input)
+
+    def _post_process(self, result: str, user_input: str) -> str:
+        """后处理: 幻觉检测 + 引用验证"""
+        # 幻觉检测
+        if self._hallucination_detector:
+            detection = self._hallucination_detector.detect(result)
+            if detection.is_hallucination:
+                result += f"\n\n[⚠️ 幻觉检测提示] {detection.correction_suggestion}"
+
+        # 引用验证
+        if self._citation_system:
+            citation_result = self._citation_system.extract_citations(result)
+            if citation_result.has_citation:
+                for cit in citation_result.citations:
+                    self._citation_system.add_citation(cit)
+                citation_list = "\n".join(
+                    f"• [{c.source}] {c.content}" for c in citation_result.citations
+                )
+                result += f"\n\n[引用来源]\n{citation_list}"
+
+        return result
+
+    def _compose_system_prompt(self, base: str, extra_context: str = "") -> str:
+        """组装系统提示词 (DSH 风格: 动态上下文拼接)"""
+        parts = [base.rstrip()]
+        if extra_context.strip():
+            parts.append(extra_context.strip())
+        return "\n\n".join(p for p in parts if p)
+
+    def run_stream(self, user_input: str) -> Generator[Dict[str, Any], None, None]:
+        """流式处理用户输入 (DSH 风格状态机 via SimpleAgentLoop)"""
+        # 同步生成器包装异步流
+        import asyncio
+        
+        async def _collect():
+            async for chunk in self._dsh_loop.arun_stream(user_input):
+                yield chunk
+        
+        loop = asyncio.new_event_loop()
+        try:
+            async_gen = _collect()
+            while True:
+                try:
+                    chunk = loop.run_until_complete(async_gen.__anext__())
+                    yield chunk
+                except StopAsyncIteration:
+                    break
+        finally:
+            loop.close()
+
 
     # ── AgentBase Protocol 方法 ──────────────────────────────
 
@@ -787,18 +869,35 @@ class SimpleAgent:
 
         start_time = time.time()
         try:
-            result_text = self.run(text)
+            loop_result = self._dsh_loop.run(text)
+            result_text = loop_result.content
             duration = (time.time() - start_time) * 1000
 
+            # 从 LoopResult 提取指标
+            tool_call_count = sum(
+                1 for e in self._dsh_loop.dsh_loop.session.events
+                if e.type == "tool/call"
+            )
+            iteration_count = loop_result.iterations
+
             metrics = AgentMetrics(
-                tool_calls=self.engine.session.tool_call_count
-                    if hasattr(self.engine.session, 'tool_call_count') else 0,
+                tool_calls=tool_call_count,
                 duration_ms=duration,
-                iterations=len(self.engine.session.messages),
+                iterations=iteration_count,
             )
 
+            # Map stop_reason to StopReason
+            stop_reason_map = {
+                "completed": StopReason.COMPLETE,
+                "max_tool_calls": StopReason.MAX_TOOL_CALLS,
+                "error": StopReason.ERROR,
+                "aborted": StopReason.ERROR,
+                "blocked": StopReason.ERROR,
+            }
+            stop_reason = stop_reason_map.get(loop_result.stop_reason, StopReason.COMPLETE)
+
             return AgentResult(
-                stop_reason=StopReason.COMPLETE,
+                stop_reason=stop_reason,
                 message=Message.assistant(result_text),
                 metrics=metrics,
             )
@@ -810,11 +909,12 @@ class SimpleAgent:
                 metrics=AgentMetrics(duration_ms=duration),
             )
 
+
     def stream(
         self,
         prompt: AgentInput = None,
         **kwargs: Any,
-    ) -> Iterator[str]:
+    ) -> Iterator[Dict[str, Any]]:
         """AgentBase Protocol: 流式调用
 
         Args:
@@ -822,10 +922,10 @@ class SimpleAgent:
             **kwargs: 额外参数
 
         Yields:
-            文本片段
+            事件字典 (token/progress/done)
         """
         if prompt is None:
-            yield "请输入内容"
+            yield {"token": "请输入内容"}
             return
 
         text = str(prompt) if not isinstance(prompt, list) else " ".join(
@@ -833,6 +933,7 @@ class SimpleAgent:
         )
 
         yield from self.run_stream(text)
+
 
     def card(self) -> "AgentCard":
         """获取 Agent Card（A2A 协议兼容）"""
@@ -909,15 +1010,43 @@ class SimpleAgent:
 
     def compact_session(self, session: Optional[SessionState] = None) -> Optional[Any]:
         """手动触发当前会话的上下文压缩（DSH-style 结构化摘要）。
-        
+
         返回压缩结果，包含 compaction_id, shadowed_token_count, checkpoint_token_count 等。
         如果未触发压缩（token 未达阈值），返回 None。
-        
+
         Args:
             session: 可选，指定要压缩的会话。默认使用当前 agent 会话。
         """
         sess = session or self.engine.session
-        return self.engine.compact_session(sess)
+        result = self.engine.compact_session(sess)
+
+        # 同步 SimpleAgentLoop 的检查点
+        if result and hasattr(self, '_dsh_loop'):
+            self._dsh_loop.save_checkpoint()
+
+        return result
+
+
+    def save_checkpoint(self) -> Optional[Dict[str, Any]]:
+        """保存 SimpleAgentLoop 状态机检查点"""
+        if hasattr(self, '_dsh_loop'):
+            return self._dsh_loop.save_checkpoint()
+        return None
+
+
+    def restore_checkpoint(self, checkpoint: Dict[str, Any]) -> bool:
+        """从 SimpleAgentLoop 状态机检查点恢复"""
+        if hasattr(self, '_dsh_loop'):
+            return self._dsh_loop.restore_checkpoint(checkpoint)
+        return False
+
+
+    def dsh_session_snapshot(self) -> Dict[str, Any]:
+        """获取 SimpleAgentLoop 会话快照"""
+        if hasattr(self, '_dsh_loop'):
+            return self._dsh_loop.get_session_snapshot()
+        return {}
+
 
     def __enter__(self) -> "SimpleAgent":
         return self

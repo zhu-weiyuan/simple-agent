@@ -38,6 +38,28 @@ from .tools.agent_tool import AgentAsTool, create_agent_tool
 from .tools.structured_output import StructuredOutputTool
 from .a2a import A2AClient, A2AServer, AgentCard as A2AAgentCard
 from .multiagent import SupervisorAgent, AgentChain, ParallelAgent, AgentRole
+from .dsh_state_machine import (
+    AgentLoop,
+    AgentLoopBuilder,
+    PhaseKind,
+    Phase,
+    AbortController,
+    AbortSignal,
+    AbortError,
+    Inbox,
+    InboxPosition,
+    InboxMessage,
+    SessionEventType,
+    SessionEvent,
+    Session as DSHSession,
+    AgentStatus,
+    create_agent_loop,
+)
+from .loop import (
+    SimpleAgentLoop,
+    LoopResult,
+    create_simple_agent_loop,
+)
 
 __all__ = [
     # Core
@@ -63,4 +85,24 @@ __all__ = [
     "AgentChain",
     "ParallelAgent",
     "AgentRole",
+    # DSH State Machine
+    "AgentLoop",
+    "AgentLoopBuilder",
+    "PhaseKind",
+    "Phase",
+    "AbortController",
+    "AbortSignal",
+    "AbortError",
+    "Inbox",
+    "InboxPosition",
+    "InboxMessage",
+    "SessionEventType",
+    "SessionEvent",
+    "DSHSession",
+    "AgentStatus",
+    "create_agent_loop",
+    # SimpleAgent Loop (DSH 集成)
+    "SimpleAgentLoop",
+    "LoopResult",
+    "create_simple_agent_loop",
 ]

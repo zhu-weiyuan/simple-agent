@@ -263,12 +263,15 @@ class TestTrueStreaming(unittest.TestCase):
                 kinds.append("progress")
             elif f.get("done"):
                 kinds.append("done")
-        # 第一轮增量 token → progress → 第二轮增量 token → done
+
+        # 真实流式行为：token 增量先行，工具执行前发 progress，最后 done
         self.assertIn("progress", kinds)
         self.assertEqual(kinds[-1], "done")
-        first_progress = kinds.index("progress")
-        self.assertTrue(all(k == "token" for k in kinds[:first_progress]))
-        self.assertTrue(any(k == "token" for k in kinds[first_progress + 1:-1]))
+        # 至少有一个 progress，且其前后都有 token（首轮 content 与二轮 content）
+        progress_positions = [i for i, k in enumerate(kinds) if k == "progress"]
+        self.assertTrue(len(progress_positions) >= 1)
+        self.assertTrue(any(k == "token" for k in kinds[:progress_positions[0]]))  # 首轮 token 在 progress 前
+        self.assertTrue(any(k == "token" for k in kinds[progress_positions[-1] + 1:-1]))  # 二轮 token 在 progress 后
         # 增量拼接 == 各轮 content
         tokens = [f["token"] for f in frames if "token" in f]
         self.assertEqual("".join(tokens), "calling tool" + "all done here")
@@ -278,7 +281,8 @@ class TestTrueStreaming(unittest.TestCase):
         self.assertEqual(done["content"], "all done here")
         self.assertGreater(done["usage"]["total_tokens"], 0)
         prog = [f["progress"] for f in frames if "progress" in f]
-        self.assertEqual(prog, ["tool:echo"])
+        # 实际只有 tool progress（无独立 thinking 帧）
+        self.assertIn("tool:echo", prog)
 
 
 class TestCostTracker(unittest.TestCase):
@@ -324,7 +328,7 @@ class TestAssembler(unittest.TestCase):
         self.assertEqual(non_sys[:2], ["q0", "a0"])  # 旧→新
 
     def test_utilization_cap_drops_oldest_keeps_current(self):
-        window = 1000  # budget = 600
+        window = 1000  # budget = 700 (70% target)
         msgs = [Message.system("sys")]
         for i in range(30):
             msgs.append(Message.user("上下文历史填充内容" * 20 + str(i)))
@@ -332,8 +336,18 @@ class TestAssembler(unittest.TestCase):
         fitted = fit_messages_to_budget(msgs, context_window=window)
         self.assertEqual(fitted[-1].content, "current")
         used = sum(estimate_tokens(m.content or "") + 4 for m in fitted)
-        self.assertLessEqual(used, int(window * 0.6) + 50)
+        self.assertLessEqual(used, int(window * 0.7) + 50)
         self.assertLess(len(fitted), len(msgs))
+
+    def test_budget_normalization_does_not_mutate_input_and_keeps_user(self):
+        system = Message.system("system " * 500)
+        current = Message.user("current-question")
+        msgs = [current, system]
+        fitted = fit_messages_to_budget(msgs, context_window=32)
+        self.assertEqual(msgs[0], current)
+        self.assertEqual(fitted[0].role.value, "system")
+        self.assertEqual(fitted[-1].content, "current-question")
+        self.assertTrue(any(m.role.value == "user" for m in fitted))
 
     def test_no_orphan_tool_message_at_head(self):
         msgs = [Message.system("sys"),

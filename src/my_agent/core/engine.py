@@ -32,6 +32,7 @@ from typing import (
     Generator,
     List,
     Optional,
+    TYPE_CHECKING,
 )
 
 from ..types.message import Message, Role, ToolCall
@@ -51,6 +52,9 @@ from ..security.prompt_guard import scan_input, scan_output
 from ..bridge.permissions import PermissionPolicy
 from .hooks import HookPoint, HookRegistry
 from .context_assembler import estimate_tokens, fit_messages_to_budget
+
+if TYPE_CHECKING:
+    from ..loop import SimpleAgentLoop, create_simple_agent_loop
 
 try:
     import jsonschema as _jsonschema
@@ -121,13 +125,13 @@ AsyncLLMCallFn = Callable[..., Awaitable[Any]]
 AsyncLLMStreamFn = Callable[..., Any]
 
 DEFAULT_TOOL_CONCURRENCY = 16
-DEFAULT_TOOL_TIMEOUT_SECONDS = float(os.environ.get("TOOL_TIMEOUT_SECONDS", "20"))
+DEFAULT_TOOL_TIMEOUT_SECONDS = float(os.environ.get("TOOL_TIMEOUT_SECONDS", "3600"))
 DEFAULT_TOOL_MAX_RETRIES = max(0, int(os.environ.get("TOOL_MAX_RETRIES", "1")))
 DEFAULT_TOOL_RETRY_BASE_SECONDS = max(0.0, float(os.environ.get("TOOL_RETRY_BASE_SECONDS", "0.15")))
 DEFAULT_TOOL_CIRCUIT_FAILURE_THRESHOLD = max(
     1, int(os.environ.get("TOOL_CIRCUIT_FAILURE_THRESHOLD", "5")))
 DEFAULT_TOOL_CIRCUIT_RECOVERY_SECONDS = max(
-    0.0, float(os.environ.get("TOOL_CIRCUIT_RECOVERY_SECONDS", "30")))
+    0.0, float(os.environ.get("TOOL_CIRCUIT_RECOVERY_SECONDS", "3600")))
 
 # Only safe, read-only built-ins retry automatically. Tools requiring an
 # approval may have side effects and must not be replayed after a timeout.
@@ -575,7 +579,7 @@ class QueryEngine:
         gateway: Optional[Any] = None,
         budget_policy: Any = BudgetPolicy.DEGRADE,
         reserved_output_tokens: int = 512,
-        context_window: int = 32768,
+        context_window: int = 131072,
         tool_concurrency: int = DEFAULT_TOOL_CONCURRENCY,
         tool_timeout_seconds: float = DEFAULT_TOOL_TIMEOUT_SECONDS,
         tool_max_retries: int = DEFAULT_TOOL_MAX_RETRIES,
@@ -599,6 +603,16 @@ class QueryEngine:
         self.budget_policy = BudgetPolicy.coerce(budget_policy)
         self.reserved_output_tokens = max(0, int(reserved_output_tokens))
         self.context_window = context_window
+        # DSH uses these same last-mile budget knobs before provider dispatch.
+        self.context_target_ratio = min(0.95, max(0.10, float(
+            os.environ.get("CONTEXT_TARGET_RATIO", "0.70"))))
+        self.context_safety_margin = max(0, int(
+            os.environ.get("CONTEXT_SAFETY_MARGIN_TOKENS", "1024")))
+        # Provider-side token accounting includes the chat template and tool
+        # schema serialization.  This independent cap protects long DSH runs
+        # even when a generic token estimator is imperfect.
+        self.provider_input_ratio = min(0.85, max(0.15, float(
+            os.environ.get("CONTEXT_PROVIDER_INPUT_RATIO", "0.50"))))
         self.tool_concurrency = max(1, tool_concurrency)
         self.tool_timeout_seconds = max(0.01, float(tool_timeout_seconds))
         self.tool_max_retries = max(0, int(tool_max_retries))
@@ -631,6 +645,9 @@ class QueryEngine:
         self._async_call_fn: Optional[AsyncLLMCallFn] = None
         self._async_stream_fn: Optional[AsyncLLMStreamFn] = None
 
+        # DSH 状态机集成 (SimpleAgentLoop)
+        self._simple_agent_loop: Optional["SimpleAgentLoop"] = None
+
         # 真实 usage 回写扣减预算: 注册在 LLM_END 上, 排在成本记账 hook 之后
         # (HookRegistry 同优先级保持注册顺序), 即"记账后 reconcile"。
         if self.gateway is not None:
@@ -654,6 +671,115 @@ class QueryEngine:
         """
         self._async_call_fn = achat_fn
         self._async_stream_fn = astream_fn
+        
+        # 同时初始化 SimpleAgentLoop (如果已有 LLM 函数)
+        if self._simple_agent_loop is not None:
+            self._simple_agent_loop.set_llm_functions(call_fn=self._llm_call_fn, stream_fn=astream_fn)
+
+    def _ensure_simple_agent_loop(self, session: SessionState, max_tool_calls: int = 200) -> "SimpleAgentLoop":
+        """获取或创建 SimpleAgentLoop 实例"""
+        # DSH 的 inbox/phase/session 是一次活动的运行状态，不能跨 HTTP
+        # 请求复用。每个请求都从当前持久化 SessionState 建立一个新的 loop，
+        # 否则上一个请求残留的 phase、inbox 和 event log 会改变本请求的终止条件。
+        from ..loop import create_simple_agent_loop
+        # Keep the loop local to this request. A shared loop lets concurrent
+        # sessions overwrite each other's phase, inbox and event listeners.
+        loop = create_simple_agent_loop(
+            engine=self,
+            system_prompt=self.system_prompt_base,
+            session_state=session,
+            max_tool_calls=max_tool_calls,
+            checkpoint_path=None,
+        )
+        loop.set_llm_functions(
+            call_fn=self._llm_call_fn,
+            stream_fn=self._async_stream_fn,
+        )
+        # Retain the most recently created loop for backwards-compatible
+        # diagnostics only; request execution uses the local return value.
+        self._simple_agent_loop = loop
+        return loop
+
+    def _compact_for_dsh_if_needed(self, session: SessionState) -> Optional[Any]:
+        """Compact durable history before the DSH loop builds an OpenAI payload.
+
+        The normal engine calls ``_assemble_messages`` (and compacts there),
+        while DSH constructs requests directly from ``SessionState``.  Without
+        this preflight those two execution paths had different safety behaviour.
+        """
+        compactor = getattr(self, "_compaction_engine", None)
+        if not compactor:
+            return None
+        try:
+            raw_ratio = os.environ.get("DSH_COMPACTION_TRIGGER_RATIO", "0.45")
+            trigger_ratio = min(0.80, max(0.10, float(raw_ratio)))
+            result = compactor.maybe_compact(session, threshold_ratio=trigger_ratio)
+            if result:
+                self.hooks.fire(HookPoint.SESSION_COMPACT)
+                logger.info(
+                    "DSH preflight compaction: shadowed=%d checkpoint=%d",
+                    result.shadowed_token_count,
+                    result.checkpoint_token_count,
+                )
+            return result
+        except Exception as exc:  # noqa: BLE001 -- final payload fitting remains the safety net
+            logger.warning("DSH preflight compaction failed; continuing with last-mile fitting: %s", exc)
+            return None
+
+    async def arun_with_dsh(self, query: str, session: Optional[SessionState] = None,
+                            ctx: Optional[QueryContext] = None,
+                            max_tool_calls: int = 200, session_id: str = "",
+                            llm_idle_timeout: Optional[float] = None) -> Dict[str, Any]:
+        """使用 DSH 状态机执行查询"""
+        sess = session or self.session
+        self._compact_for_dsh_if_needed(sess)
+        loop = self._ensure_simple_agent_loop(sess, max_tool_calls)
+        
+        if session_id:
+            loop.set_session_id(session_id)
+        if llm_idle_timeout is not None:
+            loop.set_llm_idle_timeout(llm_idle_timeout)
+        
+        result = await loop.arun(query)
+        
+        return {
+            "content": result.content,
+            "stop_reason": result.stop_reason,
+            "stop_detail": result.stop_detail,
+            "usage": result.usage,
+            "iterations": result.iterations,
+            "model": result.model,
+            "fallback_reason": result.fallback_reason,
+        }
+
+    async def arun_stream_with_dsh(self, query: str,
+                                   session: Optional[SessionState] = None,
+                                   ctx: Optional[QueryContext] = None,
+                                   max_tool_calls: int = 200,
+                                   session_id: str = "",
+                                   llm_idle_timeout: Optional[float] = None
+                                   ) -> AsyncIterator[Dict[str, Any]]:
+        """使用 DSH 状态机流式执行查询"""
+        sess = session or self.session
+        compacted = self._compact_for_dsh_if_needed(sess)
+        loop = self._ensure_simple_agent_loop(sess, max_tool_calls)
+        
+        if compacted:
+            yield {
+                "progress": "context:compacted",
+                "context": {
+                    "dropped_messages": max(0, compacted.end_seq - compacted.start_seq + 1),
+                    "estimated_tokens": compacted.checkpoint_token_count,
+                    "budget": int(self.context_window * self.context_target_ratio),
+                },
+            }
+        if session_id:
+            loop.set_session_id(session_id)
+        if llm_idle_timeout is not None:
+            loop.set_llm_idle_timeout(llm_idle_timeout)
+        
+        async for chunk in loop.arun_stream(query):
+            yield chunk
 
     # ── model routing ────────────────────────────────────────
 
@@ -775,17 +901,45 @@ class QueryEngine:
         目标利用率 40–60%: 超过 60% 先 compact,仍超再丢最旧历史。
         """
         target = int(self.context_window * 0.6)
+        # DEBUG: Log session state before compaction
+        sys_count = sum(1 for m in session.messages if m.role.value == "system")
+        logger.debug("_assemble_messages: session msgs=%d, systems=%d, target=%d, estimate=%d",
+                     len(session.messages), sys_count, target, estimate_tokens_of_session(session))
+        for i, m in enumerate(session.messages):
+            meta = getattr(m, "metadata", {}) or {}
+            logger.debug("  [%d] role=%s summary_boundary=%s content_len=%d",
+                         i, m.role.value, meta.get("summary_boundary"), len(m.content or ""))
+
         if estimate_tokens_of_session(session) > target and session.should_compact():
             self.hooks.fire(HookPoint.SESSION_COMPACT)
             # 优先使用 DSH-style 压缩引擎
             if hasattr(self, '_compaction_engine') and self._compaction_engine:
                 result = self._compaction_engine.maybe_compact(session)
                 if result:
-                    self._debug(f"DSH compaction: {result.shadowed_token_count} -> {result.checkpoint_token_count} tokens")
+                    logger.debug("DSH compaction: %d -> %d tokens",
+                                 result.shadowed_token_count, result.checkpoint_token_count)
             else:
                 session.compact()
+            # DEBUG: Log after compaction
+            sys_count_after = sum(1 for m in session.messages if m.role.value == "system")
+            logger.debug("After compaction: msgs=%d, systems=%d",
+                         len(session.messages), sys_count_after)
+            for i, m in enumerate(session.messages):
+                meta = getattr(m, "metadata", {}) or {}
+                logger.debug("  [%d] role=%s summary_boundary=%s content_len=%d",
+                             i, m.role.value, meta.get("summary_boundary"), len(m.content or ""))
+
         fitted = fit_messages_to_budget(
             session.messages, context_window=self.context_window, target_ratio=0.6)
+        # DEBUG: Log fitted messages
+        sys_count_fitted = sum(1 for m in fitted if m.role.value == "system")
+        logger.debug("After fit_messages_to_budget: fitted msgs=%d, systems=%d",
+                     len(fitted), sys_count_fitted)
+        for i, m in enumerate(fitted):
+            meta = getattr(m, "metadata", {}) or {}
+            logger.debug("  [%d] role=%s summary_boundary=%s content_len=%d",
+                         i, m.role.value, meta.get("summary_boundary"), len(m.content or ""))
+
         openai_msgs = [m.to_openai() for m in fitted]
         return self._dedup_assistant(openai_msgs)
 
@@ -934,12 +1088,15 @@ class QueryEngine:
                              "attempt": attempt_no, "fallback_reason": fallback_reason}
                 self.hooks.fire(HookPoint.LLM_START, data=hook_data)
                 content, tool_calls, usage = "", [], {}
+                # Track the inner LLM stream iterator for proper cleanup on cancellation
+                llm_stream_iter = None
                 try:
                     if self._async_stream_fn is not None:
                         if llm_idle_timeout is not None:
-                            async for ev in self._acall_stream(
-                                    messages, schemas, cand,
-                                    idle_timeout=llm_idle_timeout):
+                            llm_stream_iter = self._acall_stream(
+                                messages, schemas, cand,
+                                idle_timeout=llm_idle_timeout)
+                            async for ev in llm_stream_iter:
                                 etype = ev.get("type")
                                 if etype == "delta":
                                     piece = ev.get("content") or ""
@@ -953,7 +1110,8 @@ class QueryEngine:
                                     tool_calls = ev.get("tool_calls") or []
                                     usage = ev.get("usage") or {}
                         else:
-                            async for ev in self._acall_stream(messages, schemas, cand):
+                            llm_stream_iter = self._acall_stream(messages, schemas, cand)
+                            async for ev in llm_stream_iter:
                                 etype = ev.get("type")
                                 if etype == "delta":
                                     piece = ev.get("content") or ""
@@ -975,6 +1133,14 @@ class QueryEngine:
                             yield {"token": content}
                     used_model, call_error = cand, None
                     break
+                except (asyncio.CancelledError, GeneratorExit):
+                    # Client disconnected — cancel the inner LLM stream if running
+                    if llm_stream_iter is not None and hasattr(llm_stream_iter, 'aclose'):
+                        try:
+                            await llm_stream_iter.aclose()
+                        except Exception:
+                            pass
+                    raise
                 except Exception as e:  # noqa: BLE001 — 触发 fallback
                     call_error = e
                     self.hooks.fire(HookPoint.LLM_END, data={
@@ -1038,7 +1204,25 @@ class QueryEngine:
 
             if not tc_objs:
                 # 完成判定: 无 tool_calls 且非空内容 => completed
+                # PATCH: 检测"探索型任务"是否真正完成，未完成则注入继续提示
                 if (content or "").strip():
+                    # 启发式检测：如果是探索任务且内容看起来像"阶段性总结"而非完整报告，继续探索
+                    looks_like_partial = (
+                        "让我" in content and ("继续" in content or "探索" in content or "读取" in content)
+                        or "I'll" in content and ("continue" in content.lower() or "explore" in content.lower() or "read" in content.lower())
+                        or "接下来" in content
+                        or "下一步" in content
+                        or content.strip().endswith(("。", "，", ".", ",")) and len(content) < 500
+                    )
+                    # 只有前几轮才注入继续提示，避免无限循环
+                    if looks_like_partial and iteration <= 3:
+                        # 注入继续提示，让模型继续工具调用
+                        continue_prompt = Message.user(
+                            "任务未完成。请立即调用工具继续探索：列出未读目录、读取未读核心文件。"
+                            "不要输出计划文本，直接执行 list_files / read_file。"
+                        )
+                        sess.append(continue_prompt)
+                        continue  # 继续下一轮
                     final_content = content
                     stop_reason = _STOP_COMPLETED
                 else:
@@ -1394,6 +1578,15 @@ class QueryEngine:
 
     @staticmethod
     def _stop_message(stop_reason: str, detail: str) -> str:
+        # 优先识别常见模板错误，给出可操作的中文提示
+        if detail:
+            low = detail.lower()
+            if "jinja exception" in low and "system message must be at the beginning" in low:
+                return "system 消息必须位于第一条；请检查会话历史是否包含多条 system 消息或 system 出现在非首位。"
+            if "jinja exception" in low and "no user query found" in low:
+                return "没有 user 消息；请新建会话或确保对话历史包含用户输入。"
+            if "jinja exception" in low:
+                return "聊天模板报错：" + detail
         mapping = {
             _STOP_MAX_TOOL_CALLS: "已达到工具调用轮次上限，任务提前结束。",
             _STOP_REPEATED_ERROR: "工具连续出现相同错误，已熔断停止。",
@@ -1472,8 +1665,23 @@ class QueryEngine:
                 continue
 
             # Final response (no tool calls) — completed
+            # PATCH: 检测"探索型任务"是否真正完成，未完成则注入继续提示
+            content = assistant_msg.content or ""
+            looks_like_partial = (
+                "让我" in content and ("继续" in content or "探索" in content or "读取" in content)
+                or "I'll" in content and ("continue" in content.lower() or "explore" in content.lower() or "read" in content.lower())
+                or "接下来" in content
+                or "下一步" in content
+                or content.strip().endswith(("。", "，", ".", ",")) and len(content) < 500
+            )
+            if looks_like_partial and iteration < max_tool_calls - 1:
+                # 注入继续提示，让模型继续工具调用
+                continue_prompt = Message.user("请继续完成剩余探索任务，直到所有目录和核心文件都被探索完，输出完整总结。")
+                sess.append(continue_prompt)
+                continue  # 继续下一轮
+
             sess.append(assistant_msg)
-            last_response = assistant_msg.content or ""
+            last_response = content
             last_response, _output_scan = self._scan_llm_output(last_response)
             if not _output_scan.is_safe:
                 self.hooks.fire(HookPoint.QUERY_END, data={
