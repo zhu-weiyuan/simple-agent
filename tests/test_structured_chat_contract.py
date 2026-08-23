@@ -42,12 +42,12 @@ def structured_context(monkeypatch, tmp_path):
     ))
     captured = {}
 
-    async def arun(message, *, session, ctx):
+    async def arun(message, *, session, ctx, max_tool_calls=200, session_id="", llm_idle_timeout=None):
         captured["session"] = session
         captured["ctx"] = ctx
         return {"content": "{\"status\":\"ok\",\"count\":2}", "stop_reason": "completed", "usage": {}, "model": "mock"}
 
-    monkeypatch.setattr(app_prod.engine, "arun", arun)
+    monkeypatch.setattr(app_prod.engine, "arun_with_dsh", arun)
     return captured
 
 
@@ -68,20 +68,20 @@ def test_valid_output_returns_decoded_structured_value(client, structured_contex
 
 
 def test_invalid_model_json_is_not_reported_as_success(client, monkeypatch):
-    async def arun(message, *, session, ctx):
+    async def arun(message, *, session, ctx, max_tool_calls=200, session_id="", llm_idle_timeout=None):
         return {"content": "not json", "stop_reason": "completed", "usage": {}, "model": "mock"}
 
-    monkeypatch.setattr(app_prod.engine, "arun", arun)
+    monkeypatch.setattr(app_prod.engine, "arun_with_dsh", arun)
     response = client.post("/api/chat", json={"message": "status", "response_schema": SCHEMA})
     assert response.status_code == 422
     assert response.json()["error"] == "structured_output_invalid"
 
 
 def test_schema_mismatch_is_not_reported_as_success(client, monkeypatch):
-    async def arun(message, *, session, ctx):
+    async def arun(message, *, session, ctx, max_tool_calls=200, session_id="", llm_idle_timeout=None):
         return {"content": "{\"status\":\"unknown\"}", "stop_reason": "completed", "usage": {}, "model": "mock"}
 
-    monkeypatch.setattr(app_prod.engine, "arun", arun)
+    monkeypatch.setattr(app_prod.engine, "arun_with_dsh", arun)
     response = client.post("/api/chat", json={"message": "status", "response_schema": SCHEMA})
     assert response.status_code == 422
     assert "schema validation failed" in response.json()["detail"]
