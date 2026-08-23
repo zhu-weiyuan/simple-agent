@@ -55,12 +55,20 @@ async def test_jinja_template_500_is_not_retried_and_keeps_upstream_detail():
         api_key="test", base_url="http://fake/v1", model="test-model"
     )
 
+    call_count = 0
+
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+        nonlocal call_count
+        call_count += 1
+        # Ensure the response has a readable text/content for _upstream_detail
+        response = httpx.Response(
             500,
             json={"error": {"code": 500, "message": "Jinja Exception: System message must be at the beginning."}},
             request=request,
         )
+        # Force content to be available (some httpx versions need this)
+        _ = response.text
+        return response
 
     transport = httpx.MockTransport(handler)
     mock_client = httpx.AsyncClient(transport=transport)
@@ -72,7 +80,9 @@ async def test_jinja_template_500_is_not_retried_and_keeps_upstream_detail():
     finally:
         await mock_client.aclose()
 
-    # Verify no retry occurred by checking the error message contains upstream detail
+    # Verify no retry occurred (call_count == 1 means no retries)
+    assert call_count == 1, f"Expected 1 call (no retries), got {call_count}"
+    # Verify upstream detail is preserved in the error
     assert "System message must be at the beginning" in str(exc_info.value)
     assert "Jinja Exception" in str(exc_info.value)
 
@@ -105,11 +115,14 @@ async def test_streaming_http_error_reads_body_before_formatting_detail():
     )
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
+        response = httpx.Response(
             400,
             json={"error": {"message": "No user query found in messages."}},
             request=request,
         )
+        # Force content to be available
+        _ = response.text
+        return response
 
     transport_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:

@@ -52,8 +52,8 @@ Core Generation → Hallucination Detection → Citation Verification → Output
 ### Runtime Core
 | Component | Role |
 |-----------|------|
-| QueryEngine | Async loop with guardrails (max tools, error circuit, progress detection, token budget) |
-| DSHAgentLoop | DSH state machine bridge — per-request isolation, LLM injection, stream queue |
+| QueryEngine | Legacy async loop with guardrails (max tools, error circuit, progress detection, token budget) |
+| DSHAgentLoop | **Primary path** — DSH state machine bridge with per-request isolation, LLM injection, stream queue |
 | Job Manager | Background task lifecycle (submit, poll, cancel, timeout, artifacts) |
 | Artifact Store | Large binary/blob persistence with deduplication |
 | Session Events | Immutable event log for replay & audit |
