@@ -48,8 +48,8 @@ try:
 except ImportError:  # pragma: no cover
     _get_obs_metrics = None  # type: ignore[assignment]
 
-DEFAULT_TIMEOUT = float(os.getenv("LLM_TIMEOUT_SECONDS", "30"))
-TOTAL_DEADLINE = float(os.getenv("LLM_TOTAL_DEADLINE_SECONDS", "45"))
+DEFAULT_TIMEOUT = float(os.getenv("LLM_TIMEOUT_SECONDS", "3600"))
+TOTAL_DEADLINE = float(os.getenv("LLM_TOTAL_DEADLINE_SECONDS", "3600"))
 MAX_RETRIES = 2
 
 
