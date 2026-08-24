@@ -64,6 +64,97 @@ def _backoff_delay(attempt: int) -> float:
     return 0.5 * (2 ** attempt) + random.uniform(0, 0.25)
 
 
+def _response_text(resp: Any, limit: int = 2000) -> str:
+    """Best-effort upstream body extraction without leaking credentials."""
+    text = getattr(resp, "text", "")
+    if not isinstance(text, str) or not text:
+        content = getattr(resp, "content", b"")
+        if isinstance(content, bytes):
+            text = content.decode("utf-8", errors="replace")
+        elif isinstance(content, str):
+            text = content
+        else:
+            text = ""
+    return text[:limit].strip()
+
+
+def _upstream_detail(resp: Any) -> str:
+    """Return a compact, useful error body for logs and UI diagnostics."""
+    text = _response_text(resp)
+    if not text:
+        return ""
+    try:
+        payload = json.loads(text)
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("detail")
+            if message:
+                return str(message)[:2000]
+        if isinstance(error, str):
+            return error[:2000]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    return text
+
+
+def _is_deterministic_template_error(resp: Any) -> bool:
+    """Chat-template validation errors are deterministic and must not retry."""
+    detail = _upstream_detail(resp).lower()
+    return any(marker in detail for marker in (
+        "jinja exception",
+        "system message must be at the beginning",
+        "no user query found in messages",
+        "while executing callexpression",
+    ))
+
+
+def _raise_http_error_with_detail(resp: Any) -> None:
+    """Raise the provider HTTP error while preserving an available error body."""
+    try:
+        resp.raise_for_status()
+    except Exception as exc:
+        detail = _upstream_detail(resp)
+        if detail and detail not in str(exc):
+            if httpx is not None and isinstance(exc, httpx.HTTPStatusError):
+                raise httpx.HTTPStatusError(
+                    f"{exc} | upstream: {detail}",
+                    request=exc.request, response=exc.response,
+                ) from exc
+            if requests is not None and isinstance(exc, requests.exceptions.HTTPError):
+                raise requests.exceptions.HTTPError(
+                    f"{exc} | upstream: {detail}",
+                    response=getattr(exc, "response", resp),
+                ) from exc
+        raise
+
+
+async def _read_async_error_body(resp: Any) -> bool:
+    """Read a failing async response before inspecting or raising it.
+
+    Recent httpx versions leave response bodies unread for some transport
+    paths. Reading here makes retry classification and surfaced diagnostics
+    deterministic without consuming successful SSE responses.
+    """
+    try:
+        status_code = int(getattr(resp, "status_code", 0))
+    except (TypeError, ValueError):
+        return False
+    if status_code < 400:
+        return False
+    reader = getattr(resp, "aread", None)
+    if callable(reader):
+        result = reader()
+        if hasattr(result, "__await__"):
+            await result
+    return True
+
+
+async def _raise_async_http_error_with_detail(resp: Any) -> None:
+    """Read an async streaming error body before formatting its HTTP error."""
+    if await _read_async_error_body(resp):
+        _raise_http_error_with_detail(resp)
+
+
 def _merge_reasoning(data: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize completion payload without exposing hidden reasoning.
 
@@ -139,8 +230,9 @@ class LLMClient:
                 resp = requests.post(
                     url, json=payload, headers=self._headers(),
                     stream=stream, timeout=min(DEFAULT_TIMEOUT, remaining))
-                if resp.status_code in (429, 500, 502, 503, 504) \
-                        and attempt < MAX_RETRIES:
+                if (resp.status_code in (429, 500, 502, 503, 504)
+                        and attempt < MAX_RETRIES
+                        and not _is_deterministic_template_error(resp)):
                     last_exc = RuntimeError(f"HTTP {resp.status_code}")
                     if self._metrics is not None:
                         self._metrics.increment_counter(
@@ -153,7 +245,7 @@ class LLMClient:
                     time.sleep(min(_backoff_delay(attempt),
                                    max(0, deadline - time.monotonic())))
                     continue
-                resp.raise_for_status()
+                _raise_http_error_with_detail(resp)
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_success()
                 if self._metrics is not None:
@@ -179,6 +271,7 @@ class LLMClient:
                     _is_http_error
                     and getattr(e, "response", None) is not None
                     and e.response.status_code in (429, 500, 502, 503, 504)
+                    and not _is_deterministic_template_error(e.response)
                 )
                 _is_transient = not _is_http_error or _retryable_http
                 if not _is_transient:
@@ -386,8 +479,12 @@ class AsyncLLMClient:
                 resp = await client.post(
                     url, json=payload, headers=self._headers(),
                     timeout=min(idle_limit, remaining))
-                if resp.status_code in (429, 500, 502, 503, 504) \
-                        and attempt < MAX_RETRIES:
+                # Read error bodies before retry classification.  This keeps
+                # provider template diagnostics available across httpx versions.
+                await _read_async_error_body(resp)
+                if (resp.status_code in (429, 500, 502, 503, 504)
+                        and attempt < MAX_RETRIES
+                        and not _is_deterministic_template_error(resp)):
                     last_exc = RuntimeError(f"HTTP {resp.status_code}")
                     if self._metrics is not None:
                         self._metrics.increment_counter(
@@ -396,7 +493,7 @@ class AsyncLLMClient:
                     await asyncio.sleep(min(_backoff_delay(attempt),
                                             max(0, deadline - time.monotonic())))
                     continue
-                resp.raise_for_status()
+                _raise_http_error_with_detail(resp)
                 if self._circuit_breaker is not None:
                     self._circuit_breaker.record_success()
                 if self._metrics is not None:
@@ -423,6 +520,7 @@ class AsyncLLMClient:
                     _is_http_error
                     and getattr(e, "response", None) is not None
                     and e.response.status_code in (429, 500, 502, 503, 504)
+                    and not _is_deterministic_template_error(e.response)
                 )
                 _is_transient = not _is_http_error or _retryable_http
                 if not _is_transient:
@@ -490,7 +588,9 @@ class AsyncLLMClient:
         async with client.stream("POST", url, json=payload,
                                  headers=self._headers(),
                                  timeout=idle_limit) as resp:
-            resp.raise_for_status()
+            # Preserve local model chat-template diagnostics (the provider
+            # often returns HTTP 500 for malformed message ordering).
+            await _raise_async_http_error_with_detail(resp)
             last_activity = time.monotonic()
             async for line in resp.aiter_lines():
                 if time.monotonic() - last_activity > idle_limit:

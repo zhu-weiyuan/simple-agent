@@ -1,243 +1,139 @@
 # SimpleAgent
 
-A Python agent framework combining ideas from strands-agents, A2A Protocol, LangGraph, AgentScope, and DeepSeek Harness (DSH).
+SimpleAgent 是一个基于 Python 的 AI Agent 服务，提供对话、工具调用、会话管理、流式输出和异步任务接口。项目使用 FastAPI 提供 Web API，并可连接 OpenAI 兼容的模型服务，例如 Ollama、LM Studio、vLLM 或云端模型 API。
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.136+-green.svg)](https://fastapi.tiangolo.com)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
----
+## 功能
 
-## What is this?
+- 对话接口，支持普通 JSON 响应和 Server-Sent Events 流式响应
+- 工具注册、参数校验和权限策略
+- 会话持久化、会话事件记录和幂等请求处理
+- 基于状态机的多步骤任务执行与恢复
+- 长对话上下文整理和摘要压缩
+- 后台任务提交、查询、取消和产物管理
+- 多智能体的串行、并行和委派调用
+- OpenAI 兼容 LLM 接口，包含重试、超时和错误诊断
+- A2A 任务接口、健康检查和 Prometheus 指标
 
-SimpleAgent v2.1 is an AI agent framework written in Python. It puts together patterns from:
+## 快速开始
 
-| Source | Adopted |
-|--------|---------|
-| strands-agents | AgentBase Protocol, `AgentResult`, Agent-as-Tool |
-| A2A Protocol | Agent Card, Task state machine, HTTP/JSON interop |
-| LangGraph | Graph-style state management, SessionState |
-| AgentScope Runtime | Budget control, Circuit breaker, Audit logging |
-| DeepSeek Harness (DSH) | Event-driven state machine, structured compaction, long-task reliability |
+### 环境要求
 
-Typical uses: local coding agents, research assistants, multi-agent experiments, cost-controlled LLM workflows.
+- Python 3.10 或更高版本
+- 一个 OpenAI 兼容的模型服务
 
----
+### 安装
 
-## Key Components
-
-### DSH-Style Event-Driven State Machine (v2.1)
-```
-Phase: IDLE → RUNNING → MAINTENANCE
-  Turn: 1, 2, 3...
-    Step: 1, 2, 3...  (each step = 1 LLM call)
-      Inbox: NEXT_TURN / NEXT_STEP dual queues
-```
-- Phase/Turn/Step layered state machine with explicit boundaries
-- Inbox dual-queue for decoupled scheduling
-- Exploration progress tracking with coverage-based completion (not model self-assessment)
-- Continuation prompts injected as system messages to override conversational drift
-- Checkpoint/Recovery via event sourcing
-
-### 7-Stage Reasoning Pipeline
-```
-Query Router → Multi-Index Retrieval → Persona Memory → 
-Core Generation → Hallucination Detection → Citation Verification → Output
-```
-- 4-tier Query Router (simple → multi-fact → cross-ref → synthesis)
-- Hybrid retrieval: vector + keyword + graph with cross-validation
-- Hallucination detection: factual, temporal, causal, overconfidence, fabrication
-- Deterministic citations with confidence scoring
-
-### Runtime Core
-| Component | Role |
-|-----------|------|
-| QueryEngine | Legacy async loop with guardrails (max tools, error circuit, progress detection, token budget) |
-| DSHAgentLoop | **Primary path** — DSH state machine bridge with per-request isolation, LLM injection, stream queue |
-| Job Manager | Background task lifecycle (submit, poll, cancel, timeout, artifacts) |
-| Artifact Store | Large binary/blob persistence with deduplication |
-| Session Events | Immutable event log for replay & audit |
-| Resilience Layer | Circuit breaker, exponential backoff, error classification |
-
-### DSH-Style Context Compaction (v2.1)
-- Head-anchored + priced tail (retain_ratio=16% dynamic budget)
-- Tool-pairing balanced boundaries — never split tool_call ↔ tool_result
-- KV cache reuse — replay prefix + compaction instruction as FINAL user message
-- Structured summary (8 sections) in `<compacted-summary>` durable format
-- Dual-layer: L1 (SessionState, simple) + L2 (CompactionEngine, LLM)
-
-### Unified 128K Context Window (v2.1)
-| Component | Window | Input Budget (70%) |
-|-----------|--------|-------------------|
-| QueryEngine | 131,072 | ~91K |
-| DSH StateMachine | 131,072 | ~91K |
-| ContextAssembler | 128,000 | ~90K |
-| fit_messages_to_budget | 131,072 | ~91K |
-| CompactionEngine fallback | 131,072 | — |
-
-### Multi-Agent Orchestration
-```python
-# Agent-as-Tool (LLM decides when to call)
-main.add_tool(sub_agent.as_tool(name="reviewer"))
-
-# Supervisor (explicit routing)
-SupervisorAgent(roles=[researcher, coder, reviewer])
-
-# Chain / Parallel
-AgentChain([("research", r), ("write", w)])
-ParallelAgent([("summary", s), ("sentiment", s)])
-```
-
-### A2A Protocol
-- Task-oriented HTTP API: `POST /messages` → `GET /tasks/{id}` → `POST /tasks/{id}/cancel`
-- SQLite persistence with fingerprint-based idempotency
-- Async support (`arun` + cooperative cancellation)
-- Remote agent registry via `A2A_AGENTS_JSON`
-
-### Security & Governance
-- PII redaction (regex + entity detection)
-- Prompt injection guard (input/output scanning)
-- Permission policy: `ask` / `allow` / `deny`
-- System prompt confidentiality directive
-
-### Observability
-- Prometheus metrics (`/api/metrics`)
-- Health probes: `/healthz` / `/api/ready` / `/api/health`
-- Request tracing with correlation IDs
-- Token budget estimation → real usage reconciliation
-
----
-
-## Quick Start
-
-### Prerequisites
-- Python 3.10+
-- OpenAI-compatible LLM endpoint (Ollama, LM Studio, vLLM, or cloud API)
-
-### Install
 ```bash
 git clone https://github.com/zhu-weiyuan/simple-agent.git
 cd simple-agent
 pip install -e .
 ```
 
-### Configure
+### 配置
+
 ```bash
 cp .env.example .env
-# Edit .env:
-# OPENAI_API_KEY=xxx
-# OPENAI_BASE_URL=http://localhost:11434/v1   # Ollama example
-# OPENAI_MODEL=qwen2.5:7b
 ```
 
-### Run
+在 `.env` 中配置模型服务：
+
+```dotenv
+OPENAI_API_KEY=your-api-key
+OPENAI_BASE_URL=http://localhost:11434/v1
+OPENAI_MODEL=qwen2.5:7b
+```
+
+`OPENAI_BASE_URL` 和 `OPENAI_MODEL` 请按实际模型服务调整。
+
+### 运行
+
 ```bash
-# CLI
-my-agent "list files in current directory"
+# 命令行
+my-agent "列出当前目录中的文件"
 
 # Web API
 uvicorn app_prod:app --host 0.0.0.0 --port 8000
-# http://localhost:8000 (chat) or http://localhost:8000/a2a.html (A2A console)
 ```
 
----
+启动后可访问：
 
-## API Reference
+- `http://localhost:8000`：聊天页面
+- `http://localhost:8000/docs`：OpenAPI 文档
+- `http://localhost:8000/a2a.html`：A2A 控制台
+
+## API
 
 | Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/chat` | POST | Non-streaming: `{"message": "...", "session_id": "..."}` |
-| `/api/chat` | POST | Streaming (SSE): `{"message": "...", "stream": true}` |
-| `/api/health` | GET | Detailed health (system, LLM, DB, A2A) |
-| `/api/ready` | GET | Kubernetes readiness probe |
-| `/healthz` | GET | Kubernetes liveness probe |
-| `/api/metrics` | GET | Prometheus text format |
-| `/api/tools` | GET | List registered tools |
-| `/api/card` | GET | Agent Card (A2A metadata) |
-| `/api/conversations` | GET | Session management |
-| `/a2a/messages` | POST | A2A: Submit task |
-| `/a2a/tasks/{id}` | GET | A2A: Query task status |
-| `/a2a/tasks/{id}/cancel` | POST | A2A: Cancel task |
+|---|---|---|
+| `/api/chat` | POST | 对话请求，支持流式和非流式输出 |
+| `/api/conversations` | GET | 查询和管理会话 |
+| `/api/tools` | GET | 查询已注册工具 |
+| `/api/card` | GET | 获取 Agent 元信息 |
+| `/api/health` | GET | 服务健康状态 |
+| `/api/ready` | GET | 就绪检查 |
+| `/healthz` | GET | 存活检查 |
+| `/api/metrics` | GET | Prometheus 指标 |
+| `/a2a/messages` | POST | 提交 A2A 任务 |
+| `/a2a/tasks/{id}` | GET | 查询 A2A 任务状态 |
+| `/a2a/tasks/{id}/cancel` | POST | 取消 A2A 任务 |
 
----
-
-## Project Structure
-
-```
-simple-agent/
-├── src/my_agent/
-│   ├── agent.py              # Main class
-│   ├── dsh_state_machine.py  # DSH event-driven state machine
-│   ├── loop.py               # SimpleAgentLoop ← DSH bridge
-│   ├── compaction.py         # DSH compaction engine
-│   ├── core/                 # QueryEngine, Hooks, ContextAssembler
-│   ├── tools/                # ToolRegistry, Builtins, AgentAsTool
-│   ├── memory/               # MemoryStore, Retrieval, SQLite
-│   ├── enhanced/             # 7-stage pipeline modules
-│   ├── multiagent.py         # Supervisor, Chain, Parallel
-│   ├── a2a.py                # A2A Protocol
-│   ├── a2a_hub.py            # FastAPI route registration
-│   ├── graph/                # Graph orchestration
-│   ├── bridge/               # Permission policy, LocalBridge
-│   ├── security/             # PII, Prompt Guard
-│   ├── llm/                  # LLMClient, AsyncLLMClient, Gateway
-│   └── types/                # Message, Session, Tool, Agent types
-├── web/                      # Static UI
-├── app_prod.py               # FastAPI entrypoint
-├── examples/
-├── evals/                    # Evaluation harness & datasets
-├── tests/
-│   ├── test_dsh_long_task_regression.py
-│   ├── test_dsh_context_budget.py
-│   ├── test_dsh_stream_contract.py
-│   └── test_llm_template_errors.py
-└── docs/
-```
-
----
-
-## Testing
+普通对话请求示例：
 
 ```bash
-# Unit tests
+curl http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"介绍一下当前项目"}'
+```
+
+流式请求示例：
+
+```bash
+curl -N http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"列出当前目录中的文件","stream":true}'
+```
+
+## 项目结构
+
+```text
+simple-agent/
+├── app_prod.py              # FastAPI 应用入口
+├── src/my_agent/
+│   ├── core/                # 对话与上下文处理
+│   ├── llm/                 # OpenAI 兼容模型客户端
+│   ├── tools/               # 工具系统
+│   ├── memory/              # 记忆与持久化
+│   ├── security/            # 输入和权限安全处理
+│   ├── graph/               # 任务编排
+│   └── a2a.py               # A2A 任务协议
+├── web/                     # Web 页面资源
+├── tests/                   # 测试
+├── examples/                # 示例
+└── docs/                    # 文档
+```
+
+## 测试与开发
+
+```bash
+# 运行全部测试
 pytest tests/
 
-# Core regression (72 tests)
-pytest tests/test_p6_pure.py tests/test_external_bug_regressions.py \
-     tests/test_llm_template_errors.py tests/test_dsh_long_task_regression.py \
-     tests/test_runtime_api.py tests/test_chat_idempotency.py tests/test_builtin_tools.py
+# 代码检查和格式化
+ruff check --fix
+ruff format
 
-# DSH long-task regression (mock LLM: 8 tool calls → completion)
-pytest tests/test_dsh_long_task_regression.py -v
-```
-
----
-
-## Development
-
-```bash
-# Format & lint
-ruff check --fix && ruff format
-
-# Type check
+# 类型检查
 mypy src/
-
-# Pre-commit
-pre-commit install
 ```
 
----
+## 许可证
 
-## License
+本项目使用 [MIT License](LICENSE)。
 
-MIT — see [LICENSE](LICENSE).
+## 致谢
 
----
-
-## Acknowledgments
-
-- [strands-agents](https://github.com/strands-agents) — AgentBase protocol
-- [A2A Protocol](https://github.com/google/A2A) — Interoperability standard
-- [LangGraph](https://github.com/langchain-ai/langgraph) — Graph state patterns
-- [AgentScope](https://github.com/modelscope/agentscope) — Runtime patterns
-- [DeepSeek Harness](https://github.com/deepseek-ai/dsh) — State machine & compaction
+本项目在设计和实现中参考了开源社区中关于 Agent、任务编排和模型服务接入的实践。感谢相关开源项目及其贡献者。
