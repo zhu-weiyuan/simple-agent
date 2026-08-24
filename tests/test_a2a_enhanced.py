@@ -1,4 +1,4 @@
-﻿import tempfile, os, time
+import tempfile, os, time
 import pytest
 from my_agent.a2a import A2AClient, A2AMessage, A2AServer, AgentCard, TaskState
 
@@ -110,7 +110,9 @@ def test_task_store_marks_inflight_as_timed_out_after_restart():
 def test_list_tasks_and_prune_terminal():
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "a2a.db")
-        server = A2AServer(FastAsyncAgent(), card(), task_timeout=1,
+        # This test exercises retention after several concurrent tasks. Keep
+        # the deadline above slow shared-runner scheduling and SQLite startup.
+        server = A2AServer(FastAsyncAgent(), card(), task_timeout=5,
                            db_path=db, max_retained_tasks=3)
         try:
             for i in range(5):
